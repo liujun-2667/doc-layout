@@ -298,47 +298,63 @@ class LayoutDetector:
     def compute_reading_order(self, elements: List[LayoutElement], columns_count: int = 1) -> List[LayoutElement]:
         if not elements:
             return elements
-        
-        height = max(e.y + e.height for e in elements)
-        
+
         if columns_count == 1:
             sorted_elements = sorted(elements, key=lambda e: (e.y, e.x))
         else:
             width = max(e.x + e.width for e in elements)
             column_width = width / columns_count
-            
+
             column_elements = [[] for _ in range(columns_count)]
             span_elements = []
-            
+
             for element in elements:
                 element_center = element.x + element.width / 2
                 col = int(element_center / column_width)
                 col = min(col, columns_count - 1)
-                
+
                 if element.width > column_width * 1.2:
                     span_elements.append(element)
                 else:
                     column_elements[col].append(element)
-            
+
             for i in range(columns_count):
                 column_elements[i].sort(key=lambda e: e.y)
-            
+
             sorted_elements = []
-            all_elements_with_y = []
-            
-            for col_idx, col_elems in enumerate(column_elements):
-                for elem in col_elems:
-                    all_elements_with_y.append((elem.y, col_idx, elem))
-            
-            for elem in span_elements:
-                all_elements_with_y.append((elem.y, -1, elem))
-            
-            all_elements_with_y.sort(key=lambda x: (x[0], x[1]))
-            sorted_elements = [x[2] for x in all_elements_with_y]
-        
+
+            for span_elem in sorted(span_elements, key=lambda e: e.y):
+                sorted_elements.append(span_elem)
+
+            for col_idx in range(columns_count):
+                for elem in column_elements[col_idx]:
+                    insert_at = len(sorted_elements)
+                    for i, existing in enumerate(sorted_elements):
+                        if elem.y < existing.y:
+                            insert_at = i
+                            break
+                    sorted_elements.insert(insert_at, elem)
+
+            final_sorted = []
+            remaining_span = list(sorted(span_elements, key=lambda e: e.y))
+            span_idx = 0
+
+            for col_idx in range(columns_count):
+                for elem in column_elements[col_idx]:
+                    while span_idx < len(remaining_span) and remaining_span[span_idx].y <= elem.y:
+                        final_sorted.append(remaining_span[span_idx])
+                        span_idx += 1
+                    final_sorted.append(elem)
+
+            while span_idx < len(remaining_span):
+                final_sorted.append(remaining_span[span_idx])
+                span_idx += 1
+
+            sorted_elements = final_sorted
+
         for i, element in enumerate(sorted_elements):
             element.reading_order = i + 1
-        
+
         return sorted_elements
 
     def detect_columns(self, img: np.ndarray) -> int:

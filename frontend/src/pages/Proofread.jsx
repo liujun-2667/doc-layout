@@ -62,8 +62,13 @@ function Proofread() {
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const imageRef = useRef(null);
   const containerRef = useRef(null);
+  const elementsRef = useRef([]);
 
   const pageNumParam = searchParams.get('page');
+
+  useEffect(() => {
+    elementsRef.current = elements;
+  }, [elements]);
 
   useEffect(() => {
     fetchTask();
@@ -239,9 +244,11 @@ function Proofread() {
           if (dragType === 'move') {
             newX = Math.max(0, dragStart.elemX + dx);
             newY = Math.max(0, dragStart.elemY + dy);
-          } else if (dragType === 'resize-e' || dragType === 'resize-br') {
+          }
+          if (dragType === 'resize-e' || dragType === 'resize-br') {
             newW = Math.max(20, dragStart.elemW + dx);
-          } else if (dragType === 'resize-s' || dragType === 'resize-br') {
+          }
+          if (dragType === 'resize-s' || dragType === 'resize-br') {
             newH = Math.max(20, dragStart.elemH + dy);
           }
 
@@ -254,7 +261,7 @@ function Proofread() {
 
   const handleImageMouseUp = useCallback(() => {
     if (isDragging && selectedElementId) {
-      const elem = elements.find((e) => e.id === selectedElementId);
+      const elem = elementsRef.current.find((e) => e.id === selectedElementId);
       if (elem) {
         analysisApi.updateElement(selectedElementId, {
           x: elem.x,
@@ -266,7 +273,7 @@ function Proofread() {
     }
     setIsDragging(false);
     setDragType(null);
-  }, [isDragging, selectedElementId, elements]);
+  }, [isDragging, selectedElementId]);
 
   useEffect(() => {
     if (isDragging) {
@@ -287,7 +294,7 @@ function Proofread() {
     if (!page) return '';
     if (viewMode === 'original') {
       return page.original_image_path
-        ? `/uploads/${taskId}/page_${String(page.page_number).padStart(4, '0')}/original.png`
+        ? `/results/${taskId}/page_${String(page.page_number).padStart(4, '0')}/original.png`
         : '';
     }
     return page.processed_image_path

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Card,
@@ -36,25 +36,38 @@ function TaskDetail() {
   const [loading, setLoading] = useState(false);
   const [outputFormat, setOutputFormat] = useState('json');
   const [downloading, setDownloading] = useState(false);
+  const intervalRef = useRef(null);
 
-  const fetchTask = async () => {
-    setLoading(true);
+  const fetchTask = async (showLoading = false) => {
+    if (showLoading) setLoading(true);
     try {
       const data = await taskApi.get(taskId);
       setTask(data);
     } catch (error) {
       message.error('获取任务详情失败');
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchTask();
-    if (task?.status === 'processing' || task?.status === 'pending') {
-      const interval = setInterval(fetchTask, 2000);
-      return () => clearInterval(interval);
+    fetchTask(true);
+  }, [taskId]);
+
+  useEffect(() => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
     }
+    if (task?.status === 'processing' || task?.status === 'pending') {
+      intervalRef.current = setInterval(() => fetchTask(false), 2000);
+    }
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+    };
   }, [taskId, task?.status]);
 
   const handleDownload = async () => {
