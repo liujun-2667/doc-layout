@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 
 from app.database import engine, Base
-from app.api import tasks, pages, analysis, output
+from app.api import tasks, pages, analysis, output, templates
 from app.config import settings
 import os
 
@@ -36,6 +36,7 @@ app.include_router(tasks.router, prefix="/api/tasks", tags=["tasks"])
 app.include_router(pages.router, prefix="/api/pages", tags=["pages"])
 app.include_router(analysis.router, prefix="/api/analysis", tags=["analysis"])
 app.include_router(output.router, prefix="/api/output", tags=["output"])
+app.include_router(templates.router, prefix="/api/templates", tags=["templates"])
 
 
 @app.get("/api/health")

@@ -101,6 +101,7 @@ class TaskCreate(TaskBase):
 class TaskResponse(TaskBase):
     id: str
     error_message: Optional[str] = None
+    template_match_info: Optional[Dict[str, Any]] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
     expires_at: Optional[datetime] = None
@@ -124,3 +125,109 @@ class LayoutAnalysisResult(BaseModel):
 
 class OutputFormatRequest(BaseModel):
     format: str = "json"
+
+
+class TemplateElementBase(BaseModel):
+    element_type: str
+    rel_x: float
+    rel_y: float
+    rel_width: float
+    rel_height: float
+    reading_order: int
+    level: int = 1
+    topology: Dict[str, Any] = {}
+
+
+class TemplateElementCreate(TemplateElementBase):
+    pass
+
+
+class TemplateElementResponse(TemplateElementBase):
+    id: str
+    template_page_id: str
+
+    class Config:
+        from_attributes = True
+
+
+class TemplatePageBase(BaseModel):
+    page_number: int
+    width: int = 1000
+    height: int = 1414
+    is_first_page: bool = False
+
+
+class TemplatePageCreate(TemplatePageBase):
+    elements: List[TemplateElementCreate] = []
+
+
+class TemplatePageResponse(TemplatePageBase):
+    id: str
+    template_id: str
+    elements: List[TemplateElementResponse] = []
+
+    class Config:
+        from_attributes = True
+
+
+class LayoutTemplateBase(BaseModel):
+    name: str
+    document_types: List[str] = []
+    description: Optional[str] = None
+
+
+class LayoutTemplateCreate(LayoutTemplateBase):
+    pages: List[TemplatePageCreate] = []
+    source_task_id: Optional[str] = None
+
+
+class LayoutTemplateUpdate(BaseModel):
+    name: Optional[str] = None
+    document_types: Optional[List[str]] = None
+    description: Optional[str] = None
+
+
+class LayoutTemplateResponse(LayoutTemplateBase):
+    id: str
+    match_count: int = 0
+    created_at: datetime
+    updated_at: Optional[datetime]
+    pages: List[TemplatePageResponse] = []
+
+    class Config:
+        from_attributes = True
+
+
+class TemplateVersionBase(BaseModel):
+    version_number: int
+    snapshot: Dict[str, Any] = {}
+
+
+class TemplateVersionResponse(TemplateVersionBase):
+    id: str
+    template_id: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class TemplateListResponse(BaseModel):
+    templates: List[LayoutTemplateResponse]
+    total: int
+
+
+class MatchResult(BaseModel):
+    template: LayoutTemplateResponse
+    similarity: float
+    page_matches: List[Dict[str, Any]] = []
+
+
+class ApplyTemplateRequest(BaseModel):
+    template_id: str
+    accept: bool = True
+
+
+class SaveTemplateConflictRequest(BaseModel):
+    action: str
+    new_name: Optional[str] = None

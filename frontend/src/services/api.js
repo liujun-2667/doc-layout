@@ -77,4 +77,78 @@ export const outputApi = {
       .then((r) => r.data),
 };
 
+export const templateApi = {
+  list: (params = {}) =>
+    api.get('/templates', { params }).then((r) => r.data),
+
+  get: (templateId) =>
+    api.get(`/templates/${templateId}`).then((r) => r.data),
+
+  create: (data) =>
+    api.post('/templates', data).then((r) => r.data),
+
+  createFromTask: (taskId, name, documentTypes, description) =>
+    api
+      .post(`/templates/from-task/${taskId}`, {
+        name,
+        document_types: documentTypes,
+        description,
+      })
+      .then((r) => r.data),
+
+  checkName: (name, excludeId = null) =>
+    api
+      .post('/templates/check-name', {
+        name,
+        exclude_id: excludeId,
+      })
+      .then((r) => r.data),
+
+  resolveConflict: (taskId, name, action, documentTypes, description, newName = null) =>
+    api
+      .post(`/templates/resolve-conflict/${taskId}`, {
+        name,
+        document_types: documentTypes,
+        description,
+        conflict_request: {
+          action,
+          new_name: newName,
+        },
+      })
+      .then((r) => r.data),
+
+  update: (templateId, data) =>
+    api.put(`/templates/${templateId}`, data).then((r) => r.data),
+
+  delete: (templateId) =>
+    api.delete(`/templates/${templateId}`).then((r) => r.data),
+
+  listVersions: (templateId) =>
+    api.get(`/templates/${templateId}/versions`).then((r) => r.data),
+
+  rollbackVersion: (templateId, versionId) =>
+    api
+      .post(`/templates/${templateId}/versions/${versionId}/rollback`)
+      .then((r) => r.data),
+
+  match: (taskId, documentTypes = null) =>
+    api
+      .post(`/templates/match/${taskId}`, {
+        document_types: documentTypes,
+      })
+      .then((r) => r.data),
+
+  accept: (taskId, templateId) =>
+    api
+      .post(`/templates/accept/${taskId}/${templateId}`)
+      .then((r) => r.data),
+
+  restore: (taskId, snapshot) =>
+    api
+      .post(`/templates/restore/${taskId}`, {
+        snapshot,
+      })
+      .then((r) => r.data),
+};
+
 export default api;

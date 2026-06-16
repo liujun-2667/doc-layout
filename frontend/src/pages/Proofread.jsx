@@ -39,11 +39,19 @@ import {
   HolderOutlined,
   CloseOutlined,
 } from '@ant-design/icons';
-import { taskApi, pageApi, analysisApi } from '../services/api';
+import { taskApi, pageApi, analysisApi, templateApi } from '../services/api';
 import { ELEMENT_COLORS, ELEMENT_TYPES, getElementColor } from '../constants/elements';
 
 const { Option } = Select;
 const { TextArea } = Input;
+
+const DOCUMENT_TYPES = [
+  { value: '论文', label: '论文' },
+  { value: '报告', label: '报告' },
+  { value: '发票', label: '发票' },
+  { value: '合同', label: '合同' },
+  { value: '简历', label: '简历' },
+];
 
 function Proofread() {
   const { taskId } = useParams();
@@ -62,6 +70,7 @@ function Proofread() {
   const [drawerVisible, setDrawerVisible] = useState(false);
   const [editingElement, setEditingElement] = useState(null);
   const [form] = Form.useForm();
+  const [saveTemplateForm] = Form.useForm();
   const [rotationAngle, setRotationAngle] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
   const [dragType, setDragType] = useState(null);
@@ -72,6 +81,11 @@ function Proofread() {
   const [isDrawingSplitLine, setIsDrawingSplitLine] = useState(false);
   const [dragItemId, setDragItemId] = useState(null);
   const [dragOverItemId, setDragOverItemId] = useState(null);
+  const [saveTemplateModalVisible, setSaveTemplateModalVisible] = useState(false);
+  const [templateMatchInfo, setTemplateMatchInfo] = useState(null);
+  const [matchInfoAccepted, setMatchInfoAccepted] = useState(false);
+  const [conflictModalVisible, setConflictModalVisible] = useState(false);
+  const [pendingTemplateData, setPendingTemplateData] = useState(null);
   const imageRef = useRef(null);
   const imageRefOriginal = useRef(null);
   const imageRefProcessed = useRef(null);
@@ -100,6 +114,15 @@ function Proofread() {
       const data = await taskApi.get(taskId);
       setTask(data);
       setPages(data.pages || []);
+
+      if (data.template_match_info && data.template_match_info.matched_template_id) {
+        setTemplateMatchInfo(data.template_match_info);
+        setMatchInfoAccepted(data.template_match_info.accepted || false);
+      } else {
+        setTemplateMatchInfo(null);
+        setMatchInfoAccepted(false);
+      }
+
       if (data.pages && data.pages.length > 0) {
         const pageIndex = pageNumParam
           ? data.pages.findIndex((p) => p.page_number === parseInt(pageNumParam))
@@ -111,6 +134,84 @@ function Proofread() {
       }
     } catch (error) {
       message.error('获取任务信息失败');
+    }
+  };
+
+  const handleAcceptMatch = async () => {
+    if (!templateMatchInfo?.matched_template_id) return;
+    try {
+      await templateApi.accept(taskId, templateMatchInfo.matched_template_id);
+      setMatchInfoAccepted(true);
+      message.success('已接受模板匹配结果');
+    } catch (error) {
+      message.error('操作失败');
+    }
+  };
+
+  const handleUndoMatch = async () => {
+    if (!templateMatchInfo?.original_elements_snapshot) return;
+    try {
+      await templateApi.restore(taskId, templateMatchInfo.original_elements_snapshot);
+      setTemplateMatchInfo(null);
+      setMatchInfoAccepted(false);
+      message.success('已恢复原始检测结果');
+      fetchTask();
+    } catch (error) {
+      message.error('撤销失败');
+    }
+  };
+
+  const handleOpenSaveTemplateModal = () => {
+    if (!task || !task.pages || task.pages.length === 0) {
+      message.warning('当前没有可保存的版面数据');
+      return;
+    }
+    saveTemplateForm.resetFields();
+    saveTemplateForm.setFieldsValue({
+      name: task.filename?.replace(/\.[^.]+$/, '') + ' 模板',
+      document_types: [],
+      description: '',
+    });
+    setSaveTemplateModalVisible(true);
+  };
+
+  const handleSaveTemplate = async (values) => {
+    try {
+      const result = await templateApi.createFromTask(
+        taskId,
+        values.name,
+        values.document_types,
+        values.description
+      );
+      message.success(`模板「${result.name}」保存成功`);
+      setSaveTemplateModalVisible(false);
+    } catch (error) {
+      if (error.response?.status === 409) {
+        setPendingTemplateData(values);
+        setConflictModalVisible(true);
+      } else {
+        message.error('保存模板失败');
+      }
+    }
+  };
+
+  const handleConflictResolve = async (action, newName = null) => {
+    if (!pendingTemplateData) return;
+    try {
+      const result = await templateApi.resolveConflict(
+        taskId,
+        pendingTemplateData.name,
+        action,
+        pendingTemplateData.document_types,
+        pendingTemplateData.description,
+        newName
+      );
+      message.success(`模板「${result.name}」保存成功`);
+      setConflictModalVisible(false);
+      setSaveTemplateModalVisible(false);
+      setPendingTemplateData(null);
+    } catch (error) {
+      message.error('保存模板失败');
     }
   };
 
@@ -717,8 +818,68 @@ function Proofread() {
 
   const sortedByOrder = [...elements].sort((a, b) => a.reading_order - b.reading_order);
 
+  const renderMatchBanner = () => {
+    if (!templateMatchInfo?.matched_template_name) return null;
+
+    const similarityPct = Math.round((templateMatchInfo.avg_similarity || 0) * 100);
+
+    return (
+      <div
+        style={{
+          background: matchInfoAccepted ? '#f6ffed' : '#e6f7ff',
+          border: `1px solid ${matchInfoAccepted ? '#52c41a' : '#1890ff'}`,
+          borderRadius: 6,
+          padding: '10px 16px',
+          marginBottom: 12,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: 12,
+        }}
+      >
+        <Space wrap size="middle">
+          <span style={{ fontWeight: 500 }}>
+            {matchInfoAccepted ? '✅' : '🤖'}
+            {' 已'}
+            {matchInfoAccepted ? '确认使用' : '自动匹配'}
+            模板:
+          </span>
+          <Tag color="blue" style={{ margin: 0 }}>
+            {templateMatchInfo.matched_template_name}
+          </Tag>
+          <span style={{ color: '#666' }}>相似度: {similarityPct}%</span>
+          {templateMatchInfo.page_matches && (
+            <span style={{ color: '#999', fontSize: 12 }}>
+              ({templateMatchInfo.page_matches.length} 页匹配)
+            </span>
+          )}
+        </Space>
+        <Space>
+          {!matchInfoAccepted && (
+            <>
+              <Button type="primary" size="small" onClick={handleAcceptMatch}>
+                接受
+              </Button>
+              <Button size="small" onClick={handleUndoMatch}>
+                撤销
+              </Button>
+            </>
+          )}
+          {matchInfoAccepted && (
+            <Tag color="green" style={{ margin: 0 }}>
+              已确认
+            </Tag>
+          )}
+        </Space>
+      </div>
+    );
+  };
+
   return (
     <div style={{ height: 'calc(100vh - 64px - 48px)', display: 'flex', flexDirection: 'column' }}>
+      {renderMatchBanner()}
+
       <Card
         size="small"
         style={{ marginBottom: 12, flexShrink: 0 }}
@@ -840,6 +1001,19 @@ function Proofread() {
               拆分模式：在选中区域内拖动鼠标绘制分割线
             </Tag>
           )}
+
+          <Space.Split />
+
+          <Tooltip title="将当前校对好的版面保存为模板">
+            <Button
+              size="small"
+              type="primary"
+              icon={<SaveOutlined />}
+              onClick={handleOpenSaveTemplateModal}
+            >
+              保存为模板
+            </Button>
+          </Tooltip>
 
           <Space style={{ marginLeft: 'auto' }}>
             <span style={{ fontSize: 12, color: '#666' }}>
@@ -1189,6 +1363,104 @@ function Proofread() {
           </Form>
         )}
       </Drawer>
+
+      <Modal
+        title="保存为版面模板"
+        open={saveTemplateModalVisible}
+        onCancel={() => setSaveTemplateModalVisible(false)}
+        footer={null}
+        width={520}
+      >
+        <Form
+          form={saveTemplateForm}
+          layout="vertical"
+          onFinish={handleSaveTemplate}
+        >
+          <Form.Item
+            label="模板名称"
+            name="name"
+            rules={[{ required: true, message: '请输入模板名称' }]}
+          >
+            <Input placeholder="请输入模板名称,便于后续识别" />
+          </Form.Item>
+          <Form.Item
+            label="适用文档类型(可多选)"
+            name="document_types"
+            rules={[{ required: true, message: '请选择至少一种文档类型' }]}
+          >
+            <Select mode="multiple" placeholder="选择该模板适用的文档类型">
+              {DOCUMENT_TYPES.map((t) => (
+                <Option key={t.value} value={t.value}>
+                  {t.label}
+                </Option>
+              ))}
+            </Select>
+          </Form.Item>
+          <Form.Item label="备注说明" name="description">
+            <TextArea
+              rows={3}
+              placeholder="可选:添加模板的描述信息,如适用场景、特殊说明等"
+            />
+          </Form.Item>
+          <Form.Item>
+            <Space>
+              <Button type="primary" icon={<SaveOutlined />} htmlType="submit">
+                保存模板
+              </Button>
+              <Button onClick={() => setSaveTemplateModalVisible(false)}>
+                取消
+              </Button>
+            </Space>
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title="模板名称冲突"
+        open={conflictModalVisible}
+        onCancel={() => {
+          setConflictModalVisible(false);
+          setPendingTemplateData(null);
+        }}
+        footer={null}
+        width={480}
+      >
+        <div style={{ marginBottom: 16 }}>
+          <p style={{ color: '#faad14', fontWeight: 500 }}>
+            ⚠️ 已存在同名模板「{pendingTemplateData?.name}」
+          </p>
+          <p style={{ color: '#666', margin: 0 }}>
+            请选择处理方式:
+          </p>
+        </div>
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Button
+            block
+            type="primary"
+            onClick={() => handleConflictResolve('overwrite')}
+          >
+            覆盖现有模板(将保留旧版本快照)
+          </Button>
+          <Button
+            block
+            onClick={() => {
+              const newName = `${pendingTemplateData?.name || '模板'} (副本)`;
+              handleConflictResolve('save_as', newName);
+            }}
+          >
+            另存为新模板
+          </Button>
+          <Button
+            block
+            onClick={() => {
+              setConflictModalVisible(false);
+              setPendingTemplateData(null);
+            }}
+          >
+            取消
+          </Button>
+        </Space>
+      </Modal>
     </div>
   );
 }

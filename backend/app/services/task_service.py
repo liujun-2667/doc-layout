@@ -40,6 +40,26 @@ class TaskService:
 
         return task
 
+    def _infer_document_types(self, filename: str) -> List[str]:
+        filename_lower = filename.lower()
+        types = []
+
+        keywords_map = {
+            "论文": ["论文", "paper", "thesis", "dissertation", "学术"],
+            "报告": ["报告", "report", "分析", "研究"],
+            "发票": ["发票", "invoice", "receipt", "票据", "账单"],
+            "合同": ["合同", "contract", "协议", "agreement"],
+            "简历": ["简历", "resume", "cv", "履历"],
+        }
+
+        for doc_type, keywords in keywords_map.items():
+            for kw in keywords:
+                if kw in filename_lower:
+                    types.append(doc_type)
+                    break
+
+        return types if types else None
+
     def get_task(self, task_id: str) -> Optional[Task]:
         return self.db.query(Task).filter(Task.id == task_id).first()
 
@@ -148,6 +168,21 @@ class TaskService:
 
             task.status = "completed"
             task.updated_at = datetime.now()
+
+            inferred_types = self._infer_document_types(task.filename)
+            from app.services.template_service import TemplateService
+            template_service = TemplateService(self.db)
+            match_result = template_service.match_and_apply_to_task(task, inferred_types)
+            if match_result.get("matched_template_id"):
+                task.template_match_info = {
+                    "matched_template_id": match_result["matched_template_id"],
+                    "matched_template_name": match_result["matched_template_name"],
+                    "avg_similarity": match_result["avg_similarity"],
+                    "page_matches": match_result["page_matches"],
+                    "original_elements_snapshot": match_result["original_elements_snapshot"],
+                    "accepted": False,
+                }
+
             self.db.commit()
 
         except Exception as e:
