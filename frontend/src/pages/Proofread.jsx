@@ -79,6 +79,11 @@ function Proofread() {
   const leftPanelRef = useRef(null);
   const rightPanelRef = useRef(null);
   const elementsRef = useRef([]);
+  const isSyncingScroll = useRef(false);
+
+  const getActiveContainerRef = () => {
+    return compareMode ? rightPanelRef : containerRef;
+  };
 
   const pageNumParam = searchParams.get('page');
 
@@ -228,11 +233,14 @@ function Proofread() {
   };
 
   const handleImageMouseDown = (e) => {
-    if (splitMode && selectedElementId) {
-      const rect = containerRef.current.getBoundingClientRect();
-      const x = (e.clientX - rect.left) / (zoom / 100);
-      const y = (e.clientY - rect.top) / (zoom / 100);
+    const activeContainer = getActiveContainerRef().current;
+    if (!activeContainer) return;
 
+    const rect = activeContainer.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / (zoom / 100);
+    const y = (e.clientY - rect.top) / (zoom / 100);
+
+    if (splitMode && selectedElementId) {
       const elem = elements.find((el) => el.id === selectedElementId);
       if (!elem) return;
 
@@ -250,11 +258,7 @@ function Proofread() {
       }
     }
 
-    if (!selectedElementId || !containerRef.current) return;
-
-    const rect = containerRef.current.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / (zoom / 100);
-    const y = (e.clientY - rect.top) / (zoom / 100);
+    if (!selectedElementId) return;
 
     const elem = elements.find((e) => e.id === selectedElementId);
     if (!elem) return;
@@ -291,19 +295,19 @@ function Proofread() {
 
   const handleImageMouseMove = useCallback(
     (e) => {
-      if (isDrawingSplitLine && splitLineStart && containerRef.current) {
-        const rect = containerRef.current.getBoundingClientRect();
-        const x = (e.clientX - rect.left) / (zoom / 100);
-        const y = (e.clientY - rect.top) / (zoom / 100);
+      const activeContainer = getActiveContainerRef().current;
+      if (!activeContainer) return;
+
+      const rect = activeContainer.getBoundingClientRect();
+      const x = (e.clientX - rect.left) / (zoom / 100);
+      const y = (e.clientY - rect.top) / (zoom / 100);
+
+      if (isDrawingSplitLine && splitLineStart) {
         setSplitLineEnd({ x, y });
         return;
       }
 
-      if (!isDragging || !containerRef.current || !selectedElementId) return;
-
-      const rect = containerRef.current.getBoundingClientRect();
-      const x = (e.clientX - rect.left) / (zoom / 100);
-      const y = (e.clientY - rect.top) / (zoom / 100);
+      if (!isDragging || !selectedElementId) return;
 
       const dx = x - dragStart.x;
       const dy = y - dragStart.y;
@@ -332,7 +336,7 @@ function Proofread() {
         })
       );
     },
-    [isDragging, isDrawingSplitLine, dragStart, dragType, zoom, selectedElementId, splitLineStart]
+    [isDragging, isDrawingSplitLine, dragStart, dragType, zoom, selectedElementId, splitLineStart, compareMode]
   );
 
   const handleImageMouseUp = useCallback(() => {
@@ -404,7 +408,7 @@ function Proofread() {
     }
     setIsDragging(false);
     setDragType(null);
-  }, [isDragging, isDrawingSplitLine, selectedElementId, splitLineStart, splitLineEnd]);
+  }, [isDragging, isDrawingSplitLine, selectedElementId, splitLineStart, splitLineEnd, compareMode]);
 
   useEffect(() => {
     if (isDragging || isDrawingSplitLine) {
@@ -415,7 +419,7 @@ function Proofread() {
         document.removeEventListener('mouseup', handleImageMouseUp);
       };
     }
-  }, [isDragging, isDrawingSplitLine, handleImageMouseMove, handleImageMouseUp]);
+  }, [isDragging, isDrawingSplitLine, handleImageMouseMove, handleImageMouseUp, compareMode]);
 
   const handleZoom = (delta) => {
     setZoom((prev) => Math.max(25, Math.min(400, prev + delta)));
@@ -472,6 +476,8 @@ function Proofread() {
   };
 
   const handleComparePanelScroll = (e, sourceRef) => {
+    if (isSyncingScroll.current) return;
+
     const target = e.target;
     const source = sourceRef.current;
     if (!source || !target) return;
@@ -480,13 +486,21 @@ function Proofread() {
     const other = otherRef.current;
     if (!other) return;
 
-    const scrollRatio = target.scrollTop / (target.scrollHeight - target.clientHeight || 1);
-    const maxScroll = other.scrollHeight - other.clientHeight;
-    other.scrollTop = scrollRatio * maxScroll;
+    isSyncingScroll.current = true;
 
-    const scrollRatioX = target.scrollLeft / (target.scrollWidth - target.clientWidth || 1);
-    const maxScrollX = other.scrollWidth - other.clientWidth;
-    other.scrollLeft = scrollRatioX * maxScrollX;
+    try {
+      const scrollRatio = target.scrollTop / (target.scrollHeight - target.clientHeight || 1);
+      const maxScroll = other.scrollHeight - other.clientHeight;
+      other.scrollTop = scrollRatio * maxScroll;
+
+      const scrollRatioX = target.scrollLeft / (target.scrollWidth - target.clientWidth || 1);
+      const maxScrollX = other.scrollWidth - other.clientWidth;
+      other.scrollLeft = scrollRatioX * maxScrollX;
+    } finally {
+      requestAnimationFrame(() => {
+        isSyncingScroll.current = false;
+      });
+    }
   };
 
   const handleDragStart = (e, elementId) => {
