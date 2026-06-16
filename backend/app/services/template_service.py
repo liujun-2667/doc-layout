@@ -728,6 +728,8 @@ class TemplateService:
         if match_count > 0:
             avg_similarity /= match_count
 
+        original_snapshot["page_matches"] = results
+
         return {
             "matched_template_id": matched_template.id if matched_template else None,
             "matched_template_name": matched_template.name if matched_template else None,
@@ -1060,6 +1062,8 @@ class TemplateService:
                     k: v / match_count for k, v in total_scores.items()
                 }
 
+        original_snapshot["page_matches"] = results
+
         return {
             "matched_template_id": matched_template.id if matched_template else None,
             "matched_template_name": matched_template.name if matched_template else None,
@@ -1266,6 +1270,8 @@ class TemplateService:
                 total_scores = {
                     k: v / match_count for k, v in total_scores.items()
                 }
+
+        original_snapshot["page_matches"] = results
 
         return {
             "matched_template_id": composite_template.id,

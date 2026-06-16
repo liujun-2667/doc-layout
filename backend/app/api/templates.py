@@ -399,7 +399,7 @@ async def delete_composite_template(
     return {"message": "组合模板已删除"}
 
 
-@router.post("/composite/match/{task_id}")
+@router.post("/composite/match/{task_id}/{template_id}")
 async def match_composite_template(
     task_id: str,
     template_id: str,

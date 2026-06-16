@@ -201,11 +201,11 @@ class TemplateVersionResponse(TemplateVersionBase):
         from_attributes = True
 
 
-class MatchResult(BaseModel):
-    template: LayoutTemplateResponse
-    similarity: float
-    scores: Optional[MatchScores] = None
-    page_matches: List[Dict[str, Any]] = []
+class MatchScores(BaseModel):
+    count_similarity: float
+    type_similarity: float
+    layout_similarity: float
+    overall: float
 
 
 class LayoutTemplateResponse(LayoutTemplateBase):
@@ -218,6 +218,13 @@ class LayoutTemplateResponse(LayoutTemplateBase):
 
     class Config:
         from_attributes = True
+
+
+class MatchResult(BaseModel):
+    template: LayoutTemplateResponse
+    similarity: float
+    scores: Optional[MatchScores] = None
+    page_matches: List[Dict[str, Any]] = []
 
 
 class ApplyTemplateRequest(BaseModel):
@@ -258,13 +265,6 @@ class RecordCorrectionsRequest(BaseModel):
     task_id: str
     template_id: str
     page_corrections: List[Dict[str, Any]]
-
-
-class MatchScores(BaseModel):
-    count_similarity: float
-    type_similarity: float
-    layout_similarity: float
-    overall: float
 
 
 class CompositeTemplateRuleBase(BaseModel):

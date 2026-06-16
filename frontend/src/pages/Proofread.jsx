@@ -141,6 +141,26 @@ function Proofread() {
     }
   };
 
+  const checkAndRecordCorrections = useCallback(async () => {
+    if (
+      !templateMatchInfo?.matched_template_id ||
+      templateMatchInfo.is_composite ||
+      !templateMatchInfo.original_elements_snapshot
+    ) {
+      return;
+    }
+
+    try {
+      await templateApi.recordCorrections(
+        templateMatchInfo.matched_template_id,
+        taskId,
+        templateMatchInfo.original_elements_snapshot
+      );
+    } catch (err) {
+      console.warn('记录修正历史失败:', err);
+    }
+  }, [templateMatchInfo, taskId]);
+
   const handleAcceptMatch = async () => {
     if (!templateMatchInfo?.matched_template_id) return;
     try {
@@ -150,21 +170,7 @@ function Proofread() {
         templateMatchInfo.is_composite || false
       );
       setMatchInfoAccepted(true);
-      message.success('已接受模板匹配结果');
-
-      if (!templateMatchInfo.is_composite) {
-        setTimeout(async () => {
-          try {
-            await templateApi.recordCorrections(
-              templateMatchInfo.matched_template_id,
-              taskId,
-              [templateMatchInfo]
-            );
-          } catch (err) {
-            console.warn('记录修正历史失败:', err);
-          }
-        }, 100);
-      }
+      message.success('已接受模板匹配结果，修改元素后保存将自动记录修正反馈');
     } catch (error) {
       message.error('操作失败');
     }
@@ -315,6 +321,7 @@ function Proofread() {
       );
       setEditingElement({ ...editingElement, ...values });
       message.success('保存成功');
+      await checkAndRecordCorrections();
     } catch (error) {
       message.error('保存失败');
     }
@@ -330,6 +337,7 @@ function Proofread() {
       setSelectedElementIds([]);
       setDrawerVisible(false);
       message.success('删除成功');
+      await checkAndRecordCorrections();
     } catch (error) {
       message.error('删除失败');
     }
@@ -506,6 +514,7 @@ function Proofread() {
               setSelectedElementIds([]);
               setSplitMode(false);
               message.success('拆分成功');
+              await checkAndRecordCorrections();
             } catch (error) {
               message.error('拆分失败');
             }
@@ -577,6 +586,7 @@ function Proofread() {
           setSelectedElementIds([]);
           setSelectedElementId(null);
           message.success('合并成功');
+          await checkAndRecordCorrections();
         } catch (error) {
           message.error('合并失败');
         }
@@ -678,6 +688,7 @@ function Proofread() {
       const sorted = result.sort((a, b) => a.reading_order - b.reading_order);
       setElements(sorted);
       message.success('排序已保存');
+      await checkAndRecordCorrections();
     } catch (error) {
       message.error('保存排序失败');
       fetchTask();
