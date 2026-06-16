@@ -47,6 +47,24 @@ export const analysisApi = {
 
   deleteElement: (elementId) =>
     api.delete(`/analysis/elements/${elementId}`).then((r) => r.data),
+
+  mergeElements: (pageId, elementIds) =>
+    api
+      .post(`/analysis/pages/${pageId}/merge-elements`, { element_ids: elementIds })
+      .then((r) => r.data),
+
+  splitElement: (elementId, splitType, splitPosition) =>
+    api
+      .post(`/analysis/elements/${elementId}/split`, {
+        split_type: splitType,
+        split_position: splitPosition,
+      })
+      .then((r) => r.data),
+
+  reorderElements: (pageId, elementOrder) =>
+    api
+      .post(`/analysis/pages/${pageId}/reorder-elements`, { element_order: elementOrder })
+      .then((r) => r.data),
 };
 
 export const outputApi = {

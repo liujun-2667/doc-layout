@@ -318,6 +318,222 @@ class TaskService:
         self.db.commit()
         return True
 
+    def merge_elements(self, page_id: str, element_ids: List[str]) -> Optional[List[LayoutElement]]:
+        elements = self.db.query(LayoutElement).filter(
+            LayoutElement.id.in_(element_ids),
+            LayoutElement.page_id == page_id
+        ).all()
+
+        if len(elements) < 2:
+            return None
+
+        sorted_by_order = sorted(elements, key=lambda e: e.reading_order)
+        first_elem = sorted_by_order[0]
+        min_order = first_elem.reading_order
+
+        min_x = min(e.x for e in elements)
+        min_y = min(e.y for e in elements)
+        max_x = max(e.x + e.width for e in elements)
+        max_y = max(e.y + e.height for e in elements)
+
+        merged_x = min_x
+        merged_y = min_y
+        merged_width = max_x - min_x
+        merged_height = max_y - min_y
+
+        merged_texts = [e.text_content for e in sorted_by_order if e.text_content]
+        merged_text = "\n".join(merged_texts) if merged_texts else None
+
+        avg_confidence = sum(e.confidence for e in elements) / len(elements)
+
+        for e in elements:
+            self.db.delete(e)
+
+        merged_elem = LayoutElement(
+            id=str(uuid.uuid4()),
+            page_id=page_id,
+            element_type=first_elem.element_type,
+            x=merged_x,
+            y=merged_y,
+            width=merged_width,
+            height=merged_height,
+            confidence=avg_confidence,
+            reading_order=min_order,
+            level=first_elem.level,
+            text_content=merged_text,
+            metadata={
+                "merged_from": element_ids,
+                "merged_count": len(elements)
+            }
+        )
+        self.db.add(merged_elem)
+        self.db.flush()
+
+        remaining_elements = self.db.query(LayoutElement).filter(
+            LayoutElement.page_id == page_id,
+            LayoutElement.id != merged_elem.id
+        ).order_by(LayoutElement.reading_order).all()
+
+        current_order = min_order + 1
+        for elem in remaining_elements:
+            if elem.reading_order >= min_order:
+                elem.reading_order = current_order
+                current_order += 1
+
+        self.db.commit()
+
+        final_elements = self.db.query(LayoutElement).filter(
+            LayoutElement.page_id == page_id
+        ).order_by(LayoutElement.reading_order).all()
+
+        return final_elements
+
+    def split_element(
+        self,
+        element_id: str,
+        split_type: str,
+        split_position: float
+    ) -> Optional[List[LayoutElement]]:
+        element = self.db.query(LayoutElement).filter(
+            LayoutElement.id == element_id
+        ).first()
+
+        if not element:
+            return None
+
+        page_id = element.page_id
+        original_order = element.reading_order
+
+        if split_type == "horizontal":
+            split_y = element.y + element.height * split_position
+            elem1_y = element.y
+            elem1_height = split_y - element.y
+            elem2_y = split_y
+            elem2_height = (element.y + element.height) - split_y
+
+            elem1 = LayoutElement(
+                id=str(uuid.uuid4()),
+                page_id=page_id,
+                element_type=element.element_type,
+                x=element.x,
+                y=elem1_y,
+                width=element.width,
+                height=elem1_height,
+                confidence=element.confidence,
+                reading_order=original_order,
+                level=element.level,
+                text_content=element.text_content,
+                metadata={"split_from": element_id, "split_part": 1}
+            )
+
+            elem2 = LayoutElement(
+                id=str(uuid.uuid4()),
+                page_id=page_id,
+                element_type=element.element_type,
+                x=element.x,
+                y=elem2_y,
+                width=element.width,
+                height=elem2_height,
+                confidence=element.confidence,
+                reading_order=original_order + 1,
+                level=element.level,
+                text_content=None,
+                metadata={"split_from": element_id, "split_part": 2}
+            )
+        else:
+            split_x = element.x + element.width * split_position
+            elem1_x = element.x
+            elem1_width = split_x - element.x
+            elem2_x = split_x
+            elem2_width = (element.x + element.width) - split_x
+
+            elem1 = LayoutElement(
+                id=str(uuid.uuid4()),
+                page_id=page_id,
+                element_type=element.element_type,
+                x=elem1_x,
+                y=element.y,
+                width=elem1_width,
+                height=element.height,
+                confidence=element.confidence,
+                reading_order=original_order,
+                level=element.level,
+                text_content=element.text_content,
+                metadata={"split_from": element_id, "split_part": 1}
+            )
+
+            elem2 = LayoutElement(
+                id=str(uuid.uuid4()),
+                page_id=page_id,
+                element_type=element.element_type,
+                x=elem2_x,
+                y=element.y,
+                width=elem2_width,
+                height=element.height,
+                confidence=element.confidence,
+                reading_order=original_order + 1,
+                level=element.level,
+                text_content=None,
+                metadata={"split_from": element_id, "split_part": 2}
+            )
+
+        self.db.delete(element)
+        self.db.add(elem1)
+        self.db.add(elem2)
+        self.db.flush()
+
+        remaining_elements = self.db.query(LayoutElement).filter(
+            LayoutElement.page_id == page_id,
+            LayoutElement.id.notin_([elem1.id, elem2.id])
+        ).order_by(LayoutElement.reading_order).all()
+
+        current_order = original_order + 2
+        for elem in remaining_elements:
+            if elem.reading_order > original_order:
+                elem.reading_order = current_order
+                current_order += 1
+
+        self.db.commit()
+
+        final_elements = self.db.query(LayoutElement).filter(
+            LayoutElement.page_id == page_id
+        ).order_by(LayoutElement.reading_order).all()
+
+        return final_elements
+
+    def reorder_elements(
+        self,
+        page_id: str,
+        element_order: List[str]
+    ) -> Optional[List[LayoutElement]]:
+        elements = self.db.query(LayoutElement).filter(
+            LayoutElement.page_id == page_id
+        ).all()
+
+        elem_map = {e.id: e for e in elements}
+        valid_ids = [eid for eid in element_order if eid in elem_map]
+
+        if not valid_ids:
+            return None
+
+        for idx, elem_id in enumerate(valid_ids, start=1):
+            elem_map[elem_id].reading_order = idx
+
+        other_elements = [e for e in elements if e.id not in valid_ids]
+        other_elements.sort(key=lambda e: e.reading_order)
+        current_order = len(valid_ids) + 1
+        for elem in other_elements:
+            elem.reading_order = current_order
+            current_order += 1
+
+        self.db.commit()
+
+        final_elements = self.db.query(LayoutElement).filter(
+            LayoutElement.page_id == page_id
+        ).order_by(LayoutElement.reading_order).all()
+
+        return final_elements
+
     def generate_output(self, task_id: str, output_format: str) -> str:
         task = self.get_task(task_id)
         if not task:

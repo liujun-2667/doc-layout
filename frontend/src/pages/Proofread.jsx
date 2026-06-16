@@ -17,6 +17,7 @@ import {
   Popconfirm,
   Empty,
   Slider,
+  Checkbox,
 } from 'antd';
 import {
   ArrowLeftOutlined,
@@ -34,6 +35,9 @@ import {
   SaveOutlined,
   ReloadOutlined,
   PictureOutlined,
+  ColumnWidthOutlined,
+  HolderOutlined,
+  CloseOutlined,
 } from '@ant-design/icons';
 import { taskApi, pageApi, analysisApi } from '../services/api';
 import { ELEMENT_COLORS, ELEMENT_TYPES, getElementColor } from '../constants/elements';
@@ -50,9 +54,11 @@ function Proofread() {
   const [currentPage, setCurrentPage] = useState(null);
   const [elements, setElements] = useState([]);
   const [selectedElementId, setSelectedElementId] = useState(null);
+  const [selectedElementIds, setSelectedElementIds] = useState([]);
   const [zoom, setZoom] = useState(100);
   const [showOverlay, setShowOverlay] = useState(true);
   const [viewMode, setViewMode] = useState('processed');
+  const [compareMode, setCompareMode] = useState(false);
   const [drawerVisible, setDrawerVisible] = useState(false);
   const [editingElement, setEditingElement] = useState(null);
   const [form] = Form.useForm();
@@ -60,8 +66,18 @@ function Proofread() {
   const [isDragging, setIsDragging] = useState(false);
   const [dragType, setDragType] = useState(null);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const [splitMode, setSplitMode] = useState(false);
+  const [splitLineStart, setSplitLineStart] = useState(null);
+  const [splitLineEnd, setSplitLineEnd] = useState(null);
+  const [isDrawingSplitLine, setIsDrawingSplitLine] = useState(false);
+  const [dragItemId, setDragItemId] = useState(null);
+  const [dragOverItemId, setDragOverItemId] = useState(null);
   const imageRef = useRef(null);
+  const imageRefOriginal = useRef(null);
+  const imageRefProcessed = useRef(null);
   const containerRef = useRef(null);
+  const leftPanelRef = useRef(null);
+  const rightPanelRef = useRef(null);
   const elementsRef = useRef([]);
 
   const pageNumParam = searchParams.get('page');
@@ -98,6 +114,8 @@ function Proofread() {
     setSearchParams({ page: page.page_number });
     setRotationAngle(page.rotation_angle || 0);
     setSelectedElementId(null);
+    setSelectedElementIds([]);
+    setSplitMode(false);
 
     try {
       const pageData = await pageApi.get(page.id);
@@ -114,6 +132,25 @@ function Proofread() {
 
   const handleElementClick = (elementId, e) => {
     e.stopPropagation();
+
+    if (splitMode) {
+      if (elementId !== selectedElementId) {
+        message.info('拆分模式下只能拆分已选中的区域，请先退出拆分模式');
+        return;
+      }
+      return;
+    }
+
+    if (e.ctrlKey || e.metaKey) {
+      setSelectedElementIds((prev) => {
+        if (prev.includes(elementId)) {
+          return prev.filter((id) => id !== elementId);
+        }
+        return [...prev, elementId];
+      });
+    } else {
+      setSelectedElementIds([elementId]);
+    }
     setSelectedElementId(elementId);
     setDrawerVisible(true);
     const element = elements.find((e) => e.id === elementId);
@@ -129,6 +166,14 @@ function Proofread() {
         reading_order: element.reading_order,
         level: element.level || 1,
       });
+    }
+  };
+
+  const handleBackgroundClick = () => {
+    if (!splitMode) {
+      setSelectedElementId(null);
+      setSelectedElementIds([]);
+      setDrawerVisible(false);
     }
   };
 
@@ -154,6 +199,7 @@ function Proofread() {
       await analysisApi.deleteElement(selectedElementId);
       setElements((prev) => prev.filter((e) => e.id !== selectedElementId));
       setSelectedElementId(null);
+      setSelectedElementIds([]);
       setDrawerVisible(false);
       message.success('删除成功');
     } catch (error) {
@@ -182,6 +228,28 @@ function Proofread() {
   };
 
   const handleImageMouseDown = (e) => {
+    if (splitMode && selectedElementId) {
+      const rect = containerRef.current.getBoundingClientRect();
+      const x = (e.clientX - rect.left) / (zoom / 100);
+      const y = (e.clientY - rect.top) / (zoom / 100);
+
+      const elem = elements.find((el) => el.id === selectedElementId);
+      if (!elem) return;
+
+      if (
+        x >= elem.x &&
+        x <= elem.x + elem.width &&
+        y >= elem.y &&
+        y <= elem.y + elem.height
+      ) {
+        setIsDrawingSplitLine(true);
+        setSplitLineStart({ x, y });
+        setSplitLineEnd({ x, y });
+        e.preventDefault();
+        return;
+      }
+    }
+
     if (!selectedElementId || !containerRef.current) return;
 
     const rect = containerRef.current.getBoundingClientRect();
@@ -223,6 +291,14 @@ function Proofread() {
 
   const handleImageMouseMove = useCallback(
     (e) => {
+      if (isDrawingSplitLine && splitLineStart && containerRef.current) {
+        const rect = containerRef.current.getBoundingClientRect();
+        const x = (e.clientX - rect.left) / (zoom / 100);
+        const y = (e.clientY - rect.top) / (zoom / 100);
+        setSplitLineEnd({ x, y });
+        return;
+      }
+
       if (!isDragging || !containerRef.current || !selectedElementId) return;
 
       const rect = containerRef.current.getBoundingClientRect();
@@ -256,10 +332,65 @@ function Proofread() {
         })
       );
     },
-    [isDragging, dragStart, dragType, zoom, selectedElementId]
+    [isDragging, isDrawingSplitLine, dragStart, dragType, zoom, selectedElementId, splitLineStart]
   );
 
   const handleImageMouseUp = useCallback(() => {
+    if (isDrawingSplitLine && splitLineStart && splitLineEnd && selectedElementId) {
+      const elem = elementsRef.current.find((e) => e.id === selectedElementId);
+      if (elem) {
+        const dx = splitLineEnd.x - splitLineStart.x;
+        const dy = splitLineEnd.y - splitLineStart.y;
+
+        if (Math.abs(dx) < 10 && Math.abs(dy) < 10) {
+          setIsDrawingSplitLine(false);
+          setSplitLineStart(null);
+          setSplitLineEnd(null);
+          return;
+        }
+
+        const isHorizontal = Math.abs(dy) > Math.abs(dx);
+        let splitPosition;
+
+        if (isHorizontal) {
+          const avgY = (splitLineStart.y + splitLineEnd.y) / 2;
+          splitPosition = (avgY - elem.y) / elem.height;
+        } else {
+          const avgX = (splitLineStart.x + splitLineEnd.x) / 2;
+          splitPosition = (avgX - elem.x) / elem.width;
+        }
+
+        splitPosition = Math.max(0.1, Math.min(0.9, splitPosition));
+        const splitType = isHorizontal ? 'horizontal' : 'vertical';
+
+        Modal.confirm({
+          title: '确认拆分',
+          content: `确定要${isHorizontal ? '水平' : '垂直'}拆分此区域吗？拆分位置约 ${(splitPosition * 100).toFixed(0)}%`,
+          onOk: async () => {
+            try {
+              const result = await analysisApi.splitElement(
+                selectedElementId,
+                splitType,
+                splitPosition
+              );
+              const sorted = result.sort((a, b) => a.reading_order - b.reading_order);
+              setElements(sorted);
+              setSelectedElementId(null);
+              setSelectedElementIds([]);
+              setSplitMode(false);
+              message.success('拆分成功');
+            } catch (error) {
+              message.error('拆分失败');
+            }
+          },
+        });
+      }
+      setIsDrawingSplitLine(false);
+      setSplitLineStart(null);
+      setSplitLineEnd(null);
+      return;
+    }
+
     if (isDragging && selectedElementId) {
       const elem = elementsRef.current.find((e) => e.id === selectedElementId);
       if (elem) {
@@ -273,10 +404,10 @@ function Proofread() {
     }
     setIsDragging(false);
     setDragType(null);
-  }, [isDragging, selectedElementId]);
+  }, [isDragging, isDrawingSplitLine, selectedElementId, splitLineStart, splitLineEnd]);
 
   useEffect(() => {
-    if (isDragging) {
+    if (isDragging || isDrawingSplitLine) {
       document.addEventListener('mousemove', handleImageMouseMove);
       document.addEventListener('mouseup', handleImageMouseUp);
       return () => {
@@ -284,15 +415,15 @@ function Proofread() {
         document.removeEventListener('mouseup', handleImageMouseUp);
       };
     }
-  }, [isDragging, handleImageMouseMove, handleImageMouseUp]);
+  }, [isDragging, isDrawingSplitLine, handleImageMouseMove, handleImageMouseUp]);
 
   const handleZoom = (delta) => {
     setZoom((prev) => Math.max(25, Math.min(400, prev + delta)));
   };
 
-  const getImageUrl = (page) => {
+  const getImageUrl = (page, mode = viewMode) => {
     if (!page) return '';
-    if (viewMode === 'original') {
+    if (mode === 'original') {
       return page.original_image_path
         ? `/results/${taskId}/page_${String(page.page_number).padStart(4, '0')}/original.png`
         : '';
@@ -302,21 +433,186 @@ function Proofread() {
       : '';
   };
 
+  const handleMerge = async () => {
+    if (selectedElementIds.length < 2) {
+      message.warning('请至少选择2个区域进行合并（按住Ctrl点击选择多个）');
+      return;
+    }
+
+    Modal.confirm({
+      title: '确认合并',
+      content: `确定要合并选中的 ${selectedElementIds.length} 个区域吗？`,
+      onOk: async () => {
+        try {
+          const result = await analysisApi.mergeElements(currentPage.id, selectedElementIds);
+          const sorted = result.sort((a, b) => a.reading_order - b.reading_order);
+          setElements(sorted);
+          setSelectedElementIds([]);
+          setSelectedElementId(null);
+          message.success('合并成功');
+        } catch (error) {
+          message.error('合并失败');
+        }
+      },
+    });
+  };
+
+  const handleToggleSplitMode = () => {
+    if (!selectedElementId) {
+      message.warning('请先选择一个要拆分的区域');
+      return;
+    }
+    setSplitMode(!splitMode);
+    setIsDrawingSplitLine(false);
+    setSplitLineStart(null);
+    setSplitLineEnd(null);
+    if (!splitMode) {
+      message.info('拆分模式已开启：在选中区域内拖动鼠标绘制分割线');
+    }
+  };
+
+  const handleComparePanelScroll = (e, sourceRef) => {
+    const target = e.target;
+    const source = sourceRef.current;
+    if (!source || !target) return;
+
+    const otherRef = sourceRef === leftPanelRef ? rightPanelRef : leftPanelRef;
+    const other = otherRef.current;
+    if (!other) return;
+
+    const scrollRatio = target.scrollTop / (target.scrollHeight - target.clientHeight || 1);
+    const maxScroll = other.scrollHeight - other.clientHeight;
+    other.scrollTop = scrollRatio * maxScroll;
+
+    const scrollRatioX = target.scrollLeft / (target.scrollWidth - target.clientWidth || 1);
+    const maxScrollX = other.scrollWidth - other.clientWidth;
+    other.scrollLeft = scrollRatioX * maxScrollX;
+  };
+
+  const handleDragStart = (e, elementId) => {
+    setDragItemId(elementId);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e, elementId) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (dragOverItemId !== elementId) {
+      setDragOverItemId(elementId);
+    }
+  };
+
+  const handleDragLeave = () => {
+    setDragOverItemId(null);
+  };
+
+  const handleDrop = async (e, targetElementId) => {
+    e.preventDefault();
+    if (!dragItemId || dragItemId === targetElementId) {
+      setDragItemId(null);
+      setDragOverItemId(null);
+      return;
+    }
+
+    const sortedByOrder = [...elements].sort((a, b) => a.reading_order - b.reading_order);
+    const dragIndex = sortedByOrder.findIndex((e) => e.id === dragItemId);
+    const targetIndex = sortedByOrder.findIndex((e) => e.id === targetElementId);
+
+    if (dragIndex === -1 || targetIndex === -1) {
+      setDragItemId(null);
+      setDragOverItemId(null);
+      return;
+    }
+
+    const newOrder = [...sortedByOrder];
+    const [removed] = newOrder.splice(dragIndex, 1);
+    newOrder.splice(targetIndex, 0, removed);
+
+    const elementIdOrder = newOrder.map((e) => e.id);
+
+    const localUpdated = newOrder.map((elem, idx) => ({
+      ...elem,
+      reading_order: idx + 1,
+    }));
+    setElements(localUpdated.sort((a, b) => a.reading_order - b.reading_order));
+
+    try {
+      const result = await analysisApi.reorderElements(currentPage.id, elementIdOrder);
+      const sorted = result.sort((a, b) => a.reading_order - b.reading_order);
+      setElements(sorted);
+      message.success('排序已保存');
+    } catch (error) {
+      message.error('保存排序失败');
+      fetchTask();
+    }
+
+    setDragItemId(null);
+    setDragOverItemId(null);
+  };
+
+  const handleDragEnd = () => {
+    setDragItemId(null);
+    setDragOverItemId(null);
+  };
+
+  const renderSplitLine = () => {
+    if (!splitLineStart || !splitLineEnd) return null;
+
+    const dx = splitLineEnd.x - splitLineStart.x;
+    const dy = splitLineEnd.y - splitLineStart.y;
+    const isHorizontal = Math.abs(dy) > Math.abs(dx);
+
+    const elem = elements.find((e) => e.id === selectedElementId);
+    if (!elem) return null;
+
+    let lineStyle;
+    if (isHorizontal) {
+      const avgY = (splitLineStart.y + splitLineEnd.y) / 2;
+      lineStyle = {
+        position: 'absolute',
+        left: `${elem.x}px`,
+        top: `${avgY}px`,
+        width: `${elem.width}px`,
+        height: '2px',
+        background: '#ff4d4f',
+        boxShadow: '0 0 4px rgba(255,77,79,0.6)',
+        zIndex: 1000,
+      };
+    } else {
+      const avgX = (splitLineStart.x + splitLineEnd.x) / 2;
+      lineStyle = {
+        position: 'absolute',
+        left: `${avgX}px`,
+        top: `${elem.y}px`,
+        width: '2px',
+        height: `${elem.height}px`,
+        background: '#ff4d4f',
+        boxShadow: '0 0 4px rgba(255,77,79,0.6)',
+        zIndex: 1000,
+      };
+    }
+
+    return <div style={lineStyle} />;
+  };
+
   const renderElementBox = (elem) => {
     const color = getElementColor(elem.element_type);
     const isSelected = elem.id === selectedElementId;
+    const isMultiSelected = selectedElementIds.includes(elem.id);
 
     return (
       <div
         key={elem.id}
-        className={`element-box ${isSelected ? 'selected' : ''}`}
+        className={`element-box ${isSelected ? 'selected' : ''} ${isMultiSelected && !isSelected ? 'multi-selected' : ''}`}
         style={{
           left: `${elem.x}px`,
           top: `${elem.y}px`,
           width: `${elem.width}px`,
           height: `${elem.height}px`,
           borderColor: color.border,
-          background: isSelected ? `${color.border}33` : color.bg,
+          background: isSelected ? `${color.border}44` : isMultiSelected ? `${color.border}33` : color.bg,
+          outline: isMultiSelected && !isSelected ? `2px dashed ${color.border}` : 'none',
+          outlineOffset: '2px',
         }}
         onClick={(e) => handleElementClick(elem.id, e)}
       >
@@ -345,6 +641,66 @@ function Proofread() {
     );
   };
 
+  const renderImagePanel = (mode, panelRef) => {
+    const showOverlayHere = mode === 'processed' && showOverlay;
+
+    return (
+      <div
+        ref={panelRef}
+        className="image-panel"
+        onMouseDown={mode === 'processed' ? handleImageMouseDown : undefined}
+        onClick={mode === 'processed' ? handleBackgroundClick : undefined}
+        onScroll={
+          panelRef
+            ? (e) => handleComparePanelScroll(e, panelRef)
+            : undefined
+        }
+        style={{
+          flex: 1,
+          background: '#fff',
+          borderRadius: 8,
+          overflow: 'auto',
+          position: 'relative',
+          display: 'flex',
+          alignItems: 'flex-start',
+          justifyContent: 'center',
+          padding: 20,
+          minHeight: 0,
+        }}
+      >
+        {currentPage ? (
+          <div
+            className="image-container"
+            style={{
+              transform: `scale(${zoom / 100})`,
+              transformOrigin: 'top left',
+              position: 'relative',
+            }}
+          >
+            <img
+              ref={mode === 'original' ? imageRefOriginal : imageRefProcessed}
+              src={getImageUrl(currentPage, mode)}
+              alt={`第 ${currentPage.page_number} 页 - ${mode === 'original' ? '原图' : '处理后'}`}
+              style={{
+                maxWidth: 'none',
+                display: 'block',
+              }}
+              draggable={false}
+            />
+            {showOverlayHere && (
+              <div className="layout-overlay">
+                {elements.map(renderElementBox)}
+                {renderSplitLine()}
+              </div>
+            )}
+          </div>
+        ) : (
+          <Empty description="请选择页面" />
+        )}
+      </div>
+    );
+  };
+
   const sortedByOrder = [...elements].sort((a, b) => a.reading_order - b.reading_order);
 
   return (
@@ -354,7 +710,7 @@ function Proofread() {
         style={{ marginBottom: 12, flexShrink: 0 }}
         bodyStyle={{ padding: '8px 16px' }}
       >
-        <Space>
+        <Space wrap>
           <Button
             icon={<ArrowLeftOutlined />}
             onClick={() => navigate(`/tasks/${taskId}`)}
@@ -386,15 +742,28 @@ function Proofread() {
 
           <Space.Split />
 
-          <Select
-            size="small"
-            value={viewMode}
-            onChange={setViewMode}
-            style={{ width: 120 }}
-          >
-            <Option value="processed">处理后图像</Option>
-            <Option value="original">原始图像</Option>
-          </Select>
+          {!compareMode && (
+            <Select
+              size="small"
+              value={viewMode}
+              onChange={setViewMode}
+              style={{ width: 120 }}
+            >
+              <Option value="processed">处理后图像</Option>
+              <Option value="original">原始图像</Option>
+            </Select>
+          )}
+
+          <Tooltip title={compareMode ? '退出对比模式' : '对比模式：原图 vs 处理后'}>
+            <Button
+              size="small"
+              type={compareMode ? 'primary' : 'default'}
+              icon={<ColumnWidthOutlined />}
+              onClick={() => setCompareMode(!compareMode)}
+            >
+              {compareMode ? '退出对比' : '对比模式'}
+            </Button>
+          </Tooltip>
 
           <Tooltip title="逆时针旋转">
             <Button
@@ -424,9 +793,44 @@ function Proofread() {
             {showOverlay ? '隐藏标注' : '显示标注'}
           </Button>
 
+          <Space.Split />
+
+          <Tooltip title="合并选中的区域（按住Ctrl点击选择多个）">
+            <Button
+              size="small"
+              icon={<MergeOutlined />}
+              onClick={handleMerge}
+              disabled={selectedElementIds.length < 2}
+              type={selectedElementIds.length >= 2 ? 'primary' : 'default'}
+            >
+              合并{selectedElementIds.length >= 2 ? `(${selectedElementIds.length})` : ''}
+            </Button>
+          </Tooltip>
+
+          <Tooltip title={splitMode ? '退出拆分模式' : '拆分选中的区域'}>
+            <Button
+              size="small"
+              icon={<SplitCellsOutlined />}
+              onClick={handleToggleSplitMode}
+              type={splitMode ? 'primary' : 'default'}
+              danger={splitMode}
+              disabled={!selectedElementId}
+            >
+              {splitMode ? '退出拆分' : '拆分'}
+            </Button>
+          </Tooltip>
+
+          {splitMode && (
+            <Tag color="red">
+              <CloseOutlined style={{ marginRight: 4 }} />
+              拆分模式：在选中区域内拖动鼠标绘制分割线
+            </Tag>
+          )}
+
           <Space style={{ marginLeft: 'auto' }}>
             <span style={{ fontSize: 12, color: '#666' }}>
               共 {elements.length} 个元素
+              {selectedElementIds.length > 0 && ` | 已选 ${selectedElementIds.length} 个（按住Ctrl多选）`}
             </span>
           </Space>
         </Space>
@@ -485,56 +889,102 @@ function Proofread() {
           ))}
         </div>
 
-        <div
-          className="image-panel"
-          ref={containerRef}
-          onMouseDown={handleImageMouseDown}
-          style={{
-            flex: 1,
-            background: '#fff',
-            borderRadius: 8,
-            overflow: 'auto',
-            position: 'relative',
-            display: 'flex',
-            alignItems: 'flex-start',
-            justifyContent: 'center',
-            padding: 20,
-          }}
-        >
-          {currentPage ? (
-            <div
-              className="image-container"
-              style={{
-                transform: `scale(${zoom / 100})`,
-                transformOrigin: 'top left',
-                position: 'relative',
-              }}
-            >
-              <img
-                ref={imageRef}
-                src={getImageUrl(currentPage)}
-                alt={`第 ${currentPage.page_number} 页`}
+        {compareMode ? (
+          <div
+            style={{
+              flex: 1,
+              display: 'flex',
+              gap: 12,
+              minHeight: 0,
+            }}
+          >
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+              <div
                 style={{
-                  maxWidth: 'none',
-                  display: 'block',
+                  textAlign: 'center',
+                  padding: '4px 8px',
+                  background: '#f5f5f5',
+                  borderRadius: '4px 4px 0 0',
+                  fontSize: 12,
+                  color: '#666',
+                  fontWeight: 'bold',
                 }}
-                draggable={false}
-              />
-              {showOverlay && (
-                <div className="layout-overlay">
-                  {elements.map(renderElementBox)}
-                </div>
-              )}
+              >
+                原始图像
+              </div>
+              {renderImagePanel('original', leftPanelRef)}
             </div>
-          ) : (
-            <Empty description="请选择页面" />
-          )}
-        </div>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+              <div
+                style={{
+                  textAlign: 'center',
+                  padding: '4px 8px',
+                  background: '#e6f7ff',
+                  borderRadius: '4px 4px 0 0',
+                  fontSize: 12,
+                  color: '#1890ff',
+                  fontWeight: 'bold',
+                }}
+              >
+                处理后图像
+              </div>
+              {renderImagePanel('processed', rightPanelRef)}
+            </div>
+          </div>
+        ) : (
+          <div
+            ref={containerRef}
+            style={{
+              flex: 1,
+              background: '#fff',
+              borderRadius: 8,
+              overflow: 'auto',
+              position: 'relative',
+              display: 'flex',
+              alignItems: 'flex-start',
+              justifyContent: 'center',
+              padding: 20,
+              minHeight: 0,
+            }}
+            onMouseDown={handleImageMouseDown}
+            onClick={handleBackgroundClick}
+          >
+            {currentPage ? (
+              <div
+                className="image-container"
+                style={{
+                  transform: `scale(${zoom / 100})`,
+                  transformOrigin: 'top left',
+                  position: 'relative',
+                }}
+              >
+                <img
+                  ref={imageRef}
+                  src={getImageUrl(currentPage)}
+                  alt={`第 ${currentPage.page_number} 页`}
+                  style={{
+                    maxWidth: 'none',
+                    display: 'block',
+                  }}
+                  draggable={false}
+                />
+                {showOverlay && (
+                  <div className="layout-overlay">
+                    {elements.map(renderElementBox)}
+                    {renderSplitLine()}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <Empty description="请选择页面" />
+            )}
+          </div>
+        )}
 
         <div
           className="elements-panel"
           style={{
-            width: 320,
+            width: 340,
             background: '#fff',
             borderRadius: 8,
             padding: 16,
@@ -543,8 +993,16 @@ function Proofread() {
           }}
         >
           <div style={{ fontWeight: 'bold', marginBottom: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <span>元素列表</span>
+            <Space>
+              <OrderedListOutlined />
+              <span>元素列表</span>
+            </Space>
             <Tag color="blue">{elements.length}</Tag>
+          </div>
+
+          <div style={{ fontSize: 11, color: '#999', marginBottom: 12, padding: '6px 8px', background: '#f5f5f5', borderRadius: 4 }}>
+            <HolderOutlined style={{ marginRight: 4 }} />
+            提示：按住左侧手柄上下拖动可调整阅读顺序
           </div>
 
           <List
@@ -553,19 +1011,33 @@ function Proofread() {
             renderItem={(elem) => {
               const color = getElementColor(elem.element_type);
               const isSelected = elem.id === selectedElementId;
+              const isDragging = dragItemId === elem.id;
+              const isDragOver = dragOverItemId === elem.id;
 
               return (
                 <List.Item
-                  className={`element-item ${isSelected ? 'selected' : ''}`}
+                  className={`element-item ${isSelected ? 'selected' : ''} ${isDragging ? 'dragging' : ''} ${isDragOver ? 'drag-over' : ''}`}
                   style={{
                     cursor: 'pointer',
                     padding: '6px 8px',
                     borderRadius: 4,
                     marginBottom: 4,
-                    background: isSelected ? '#e6f7ff' : 'transparent',
+                    background: isSelected ? '#e6f7ff' : isDragOver ? '#f6ffed' : 'transparent',
+                    border: isDragOver ? '1px dashed #52c41a' : '1px solid transparent',
+                    opacity: isDragging ? 0.5 : 1,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 4,
                   }}
+                  draggable
+                  onDragStart={(e) => handleDragStart(e, elem.id)}
+                  onDragOver={(e) => handleDragOver(e, elem.id)}
+                  onDragLeave={handleDragLeave}
+                  onDrop={(e) => handleDrop(e, elem.id)}
+                  onDragEnd={handleDragEnd}
                   onClick={() => {
                     setSelectedElementId(elem.id);
+                    setSelectedElementIds([elem.id]);
                     setDrawerVisible(true);
                     const element = elements.find((e) => e.id === elem.id);
                     if (element) {
@@ -583,7 +1055,19 @@ function Proofread() {
                     }
                   }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}>
+                  <div
+                    style={{
+                      cursor: 'grab',
+                      padding: '0 4px',
+                      color: '#999',
+                      userSelect: 'none',
+                      flexShrink: 0,
+                    }}
+                    onMouseDown={(e) => e.stopPropagation()}
+                  >
+                    <HolderOutlined />
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', minWidth: 0 }}>
                     <span
                       className="element-type-tag"
                       style={{ background: color.border }}
@@ -598,7 +1082,7 @@ function Proofread() {
                         {(elem.text_content || '').slice(0, 30) || '无文本'}
                       </div>
                     </div>
-                    <div style={{ fontSize: 11, color: '#999' }}>
+                    <div style={{ fontSize: 11, color: '#999', flexShrink: 0 }}>
                       {Math.round(elem.width)}×{Math.round(elem.height)}
                     </div>
                   </div>
