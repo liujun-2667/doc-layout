@@ -149,6 +149,44 @@ export const templateApi = {
         snapshot,
       })
       .then((r) => r.data),
+
+  acceptWithComposite: (taskId, templateId, isComposite) =>
+    api
+      .post(`/templates/accept/${taskId}/${templateId}`, null, {
+        params: { is_composite: isComposite },
+      })
+      .then((r) => r.data),
+
+  recordCorrections: (templateId, taskId, pageCorrections) =>
+    api
+      .post(`/templates/${templateId}/record-corrections`, {
+        task_id: taskId,
+        template_id: templateId,
+        page_corrections: pageCorrections,
+      })
+      .then((r) => r.data),
+
+  getCorrectionHistory: (templateId, skip = 0, limit = 100) =>
+    api
+      .get(`/templates/${templateId}/correction-history`, {
+        params: { skip, limit },
+      })
+      .then((r) => r.data),
+
+  createComposite: (data) =>
+    api.post('/templates/composite', data).then((r) => r.data),
+
+  getComposite: (templateId) =>
+    api.get(`/templates/composite/${templateId}`).then((r) => r.data),
+
+  updateComposite: (templateId, data) =>
+    api.put(`/templates/composite/${templateId}`, data).then((r) => r.data),
+
+  deleteComposite: (templateId) =>
+    api.delete(`/templates/composite/${templateId}`).then((r) => r.data),
+
+  matchComposite: (taskId, templateId) =>
+    api.post(`/templates/composite/match/${taskId}/${templateId}`).then((r) => r.data),
 };
 
 export default api;

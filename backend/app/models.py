@@ -131,3 +131,50 @@ class TemplateVersion(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     template = relationship("LayoutTemplate", back_populates="versions")
+
+
+class TemplateCorrectionHistory(Base):
+    __tablename__ = "template_correction_histories"
+
+    id = Column(String, primary_key=True, index=True)
+    template_id = Column(String, ForeignKey("layout_templates.id"), index=True)
+    template_page_id = Column(String, ForeignKey("template_pages.id"), index=True)
+    task_id = Column(String, index=True)
+    page_number = Column(Integer)
+    element_position = Column(Integer)
+    original_type = Column(String)
+    corrected_type = Column(String)
+    original_reading_order = Column(Integer)
+    corrected_reading_order = Column(Integer)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    template = relationship("LayoutTemplate")
+
+
+class CompositeTemplate(Base):
+    __tablename__ = "composite_templates"
+
+    id = Column(String, primary_key=True, index=True)
+    name = Column(String, index=True, nullable=False)
+    document_types = Column(JSON, default=list)
+    description = Column(Text, nullable=True)
+    match_count = Column(Integer, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    rules = relationship("CompositeTemplateRule", back_populates="composite_template", cascade="all, delete-orphan")
+
+
+class CompositeTemplateRule(Base):
+    __tablename__ = "composite_template_rules"
+
+    id = Column(String, primary_key=True, index=True)
+    composite_template_id = Column(String, ForeignKey("composite_templates.id"), index=True)
+    base_template_id = Column(String, ForeignKey("layout_templates.id"), index=True)
+    start_page = Column(Integer)
+    end_page = Column(Integer, nullable=True)
+    end_page_is_last = Column(Boolean, default=False)
+    order_index = Column(Integer)
+
+    composite_template = relationship("CompositeTemplate", back_populates="rules")
+    base_template = relationship("LayoutTemplate")

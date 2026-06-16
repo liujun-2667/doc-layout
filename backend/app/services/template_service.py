@@ -9,6 +9,9 @@ from app.models import (
     TemplatePage,
     TemplateElement,
     TemplateVersion,
+    TemplateCorrectionHistory,
+    CompositeTemplate,
+    CompositeTemplateRule,
     Task,
     Page,
     LayoutElement,
@@ -18,6 +21,9 @@ from app.schemas import (
     LayoutTemplateUpdate,
     TemplatePageCreate,
     TemplateElementCreate,
+    CompositeTemplateCreate,
+    CompositeTemplateUpdate,
+    MatchScores,
 )
 
 
@@ -757,3 +763,606 @@ class TemplateService:
                     elem.reading_order = data.get("reading_order", elem.reading_order)
                     elem.level = data.get("level", elem.level)
         self.db.commit()
+
+    def record_corrections_and_learn(
+        self,
+        template_id: str,
+        task_id: str,
+        template_snapshot: Dict[str, Any],
+    ) -> List[TemplateCorrectionHistory]:
+        task = self.db.query(Task).filter(Task.id == task_id).first()
+        if not task:
+            return []
+
+        template = self.get_template(template_id)
+        if not template:
+            return []
+
+        corrections = []
+
+        for page in task.pages:
+            page_snapshot = template_snapshot.get(page.id, {})
+            page_template_id = None
+            page_matches = template_snapshot.get("page_matches", [])
+            for pm in page_matches:
+                if pm.get("page_id") == page.id:
+                    page_template_id = pm.get("template_page_id")
+                    break
+
+            if not page_template_id:
+                continue
+
+            sorted_elements = sorted(page.elements, key=lambda e: e.reading_order)
+            sorted_snapshot_keys = sorted(
+                page_snapshot.keys(),
+                key=lambda k: page_snapshot[k].get("reading_order", 0)
+            )
+
+            for idx, elem in enumerate(sorted_elements):
+                if idx >= len(sorted_snapshot_keys):
+                    break
+
+                snapshot_key = sorted_snapshot_keys[idx]
+                snapshot_data = page_snapshot.get(snapshot_key, {})
+
+                original_type = snapshot_data.get("element_type")
+                original_order = snapshot_data.get("reading_order", idx + 1)
+                corrected_type = elem.element_type
+                corrected_order = elem.reading_order
+
+                if original_type != corrected_type or original_order != corrected_order:
+                    correction = TemplateCorrectionHistory(
+                        id=str(uuid.uuid4()),
+                        template_id=template_id,
+                        template_page_id=page_template_id,
+                        task_id=task_id,
+                        page_number=page.page_number,
+                        element_position=idx,
+                        original_type=original_type or "",
+                        corrected_type=corrected_type,
+                        original_reading_order=original_order,
+                        corrected_reading_order=corrected_order,
+                    )
+                    self.db.add(correction)
+                    corrections.append(correction)
+
+        self.db.commit()
+
+        self._auto_learn_from_corrections(template_id)
+
+        return corrections
+
+    def _auto_learn_from_corrections(self, template_id: str) -> None:
+        corrections = self.db.query(TemplateCorrectionHistory).filter(
+            TemplateCorrectionHistory.template_id == template_id
+        ).all()
+
+        pattern_counts = {}
+        for corr in corrections:
+            key = (
+                corr.template_page_id,
+                corr.element_position,
+                corr.original_type,
+                corr.corrected_type,
+            )
+            if key not in pattern_counts:
+                pattern_counts[key] = 0
+            pattern_counts[key] += 1
+
+        for key, count in pattern_counts.items():
+            if count >= 3:
+                template_page_id, element_position, original_type, corrected_type = key
+
+                template_page = self.db.query(TemplatePage).filter(
+                    TemplatePage.id == template_page_id
+                ).first()
+                if not template_page:
+                    continue
+
+                sorted_elements = sorted(
+                    template_page.elements,
+                    key=lambda e: e.reading_order
+                )
+                if element_position < len(sorted_elements):
+                    elem = sorted_elements[element_position]
+                    if elem.element_type == original_type:
+                        elem.element_type = corrected_type
+
+        self.db.commit()
+
+    def list_correction_histories(
+        self,
+        template_id: str,
+        skip: int = 0,
+        limit: int = 100,
+    ) -> Tuple[List[TemplateCorrectionHistory], int]:
+        query = self.db.query(TemplateCorrectionHistory).filter(
+            TemplateCorrectionHistory.template_id == template_id
+        ).order_by(TemplateCorrectionHistory.created_at.desc())
+
+        total = query.count()
+        histories = query.offset(skip).limit(limit).all()
+        return histories, total
+
+    def _compute_page_similarity_with_scores(
+        self,
+        template_page: TemplatePage,
+        target_page: Page,
+    ) -> Tuple[float, MatchScores]:
+        template_elements = list(template_page.elements)
+        target_elements = list(target_page.elements)
+
+        target_rel_elements = []
+        page_w = target_page.width or 1
+        page_h = target_page.height or 1
+        for elem in target_elements:
+            target_rel_elements.append({
+                "rel_x": elem.x / page_w,
+                "rel_y": elem.y / page_h,
+                "rel_width": elem.width / page_w,
+                "rel_height": elem.height / page_h,
+            })
+
+        count_sim = self._compute_element_count_similarity(
+            len(template_elements), len(target_elements)
+        )
+
+        template_types = [e.element_type for e in template_elements]
+        target_types = [e.element_type for e in target_elements]
+        type_sim = self._compute_type_distribution_similarity(
+            template_types, target_types
+        )
+
+        layout_sim = self._compute_grid_iou(template_elements, target_rel_elements)
+
+        total_sim = (
+            0.2 * count_sim
+            + 0.3 * type_sim
+            + 0.5 * layout_sim
+        )
+
+        scores = MatchScores(
+            count_similarity=count_sim,
+            type_similarity=type_sim,
+            layout_similarity=layout_sim,
+            overall=total_sim,
+        )
+
+        return total_sim, scores
+
+    def apply_template_to_page_with_marker(
+        self,
+        template: LayoutTemplate,
+        template_page_id: str,
+        target_page: Page,
+        template_name: str,
+    ) -> List[LayoutElement]:
+        template_page = None
+        for p in template.pages:
+            if p.id == template_page_id:
+                template_page = p
+                break
+
+        if not template_page:
+            return []
+
+        template_elements = sorted(
+            template_page.elements,
+            key=lambda e: (e.rel_y, e.rel_x)
+        )
+        target_elements = list(target_page.elements)
+
+        page_w = target_page.width or 1
+        page_h = target_page.height or 1
+
+        matched_indices = set()
+
+        for template_elem in template_elements:
+            best_idx = -1
+            best_distance = float("inf")
+
+            t_cx = (template_elem.rel_x + template_elem.rel_width / 2)
+            t_cy = (template_elem.rel_y + template_elem.rel_height / 2)
+
+            for i, target_elem in enumerate(target_elements):
+                if i in matched_indices:
+                    continue
+
+                t_rel_x = target_elem.x / page_w
+                t_rel_y = target_elem.y / page_h
+                t_rel_w = target_elem.width / page_w
+                t_rel_h = target_elem.height / page_h
+                t_cx2 = t_rel_x + t_rel_w / 2
+                t_cy2 = t_rel_y + t_rel_h / 2
+
+                distance = (t_cx - t_cx2) ** 2 + (t_cy - t_cy2) ** 2
+                if distance < best_distance:
+                    best_distance = distance
+                    best_idx = i
+
+            if best_idx >= 0 and best_distance < 0.02:
+                target_elements[best_idx].element_type = template_elem.element_type
+                target_elements[best_idx].reading_order = template_elem.reading_order
+                target_elements[best_idx].level = template_elem.level
+                target_elements[best_idx].metadata = {
+                    **(target_elements[best_idx].metadata or {}),
+                    "from_template": True,
+                    "template_name": template_name,
+                    "template_id": template.id,
+                    "template_page_id": template_page_id,
+                    "template_element_id": template_elem.id,
+                }
+                matched_indices.add(best_idx)
+
+        self.db.commit()
+        return target_elements
+
+    def match_and_apply_to_task_with_scores(
+        self,
+        task: Task,
+        document_types: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        results = []
+        matched_template = None
+        avg_similarity = 0.0
+        match_count = 0
+        total_scores = None
+
+        original_snapshot = self._snapshot_task_elements(task)
+
+        for page in task.pages:
+            match_result = self.match_template_to_page(page, document_types)
+            if match_result and match_result.get("template"):
+                matched_template = match_result["template"]
+                template_page = next(
+                    (p for p in matched_template.pages if p.id == match_result["page_info"]["template_page_id"]),
+                    None
+                )
+                scores = None
+                if template_page:
+                    _, scores = self._compute_page_similarity_with_scores(template_page, page)
+
+                if scores:
+                    if total_scores is None:
+                        total_scores = {
+                            "count_similarity": 0,
+                            "type_similarity": 0,
+                            "layout_similarity": 0,
+                            "overall": 0,
+                        }
+                    total_scores["count_similarity"] += scores.count_similarity
+                    total_scores["type_similarity"] += scores.type_similarity
+                    total_scores["layout_similarity"] += scores.layout_similarity
+                    total_scores["overall"] += scores.overall
+
+                avg_similarity += match_result["similarity"]
+                match_count += 1
+
+                self.apply_template_to_page_with_marker(
+                    match_result["template"],
+                    match_result["page_info"]["template_page_id"],
+                    page,
+                    match_result["template"].name,
+                )
+
+                results.append({
+                    "page_id": page.id,
+                    "page_number": page.page_number,
+                    "template_page_id": match_result["page_info"]["template_page_id"],
+                    "similarity": match_result["similarity"],
+                    "scores": scores.model_dump() if scores else None,
+                })
+
+        if match_count > 0:
+            avg_similarity /= match_count
+            if total_scores:
+                total_scores = {
+                    k: v / match_count for k, v in total_scores.items()
+                }
+
+        return {
+            "matched_template_id": matched_template.id if matched_template else None,
+            "matched_template_name": matched_template.name if matched_template else None,
+            "avg_similarity": avg_similarity,
+            "scores": total_scores,
+            "page_matches": results,
+            "original_elements_snapshot": original_snapshot,
+        }
+
+    def create_composite_template(
+        self,
+        data: CompositeTemplateCreate,
+    ) -> CompositeTemplate:
+        composite_id = str(uuid.uuid4())
+
+        composite = CompositeTemplate(
+            id=composite_id,
+            name=data.name,
+            document_types=data.document_types or [],
+            description=data.description,
+            match_count=0,
+        )
+        self.db.add(composite)
+
+        for idx, rule_data in enumerate(data.rules):
+            rule = CompositeTemplateRule(
+                id=str(uuid.uuid4()),
+                composite_template_id=composite_id,
+                base_template_id=rule_data.base_template_id,
+                start_page=rule_data.start_page,
+                end_page=rule_data.end_page,
+                end_page_is_last=rule_data.end_page_is_last,
+                order_index=idx,
+            )
+            self.db.add(rule)
+
+        self.db.commit()
+        self.db.refresh(composite)
+        return composite
+
+    def get_composite_template(self, template_id: str) -> Optional[CompositeTemplate]:
+        return self.db.query(CompositeTemplate).filter(
+            CompositeTemplate.id == template_id
+        ).first()
+
+    def list_composite_templates(
+        self,
+        skip: int = 0,
+        limit: int = 100,
+        document_type: Optional[str] = None,
+        search: Optional[str] = None,
+        sort_by: str = "created_at",
+    ) -> Tuple[List[CompositeTemplate], int]:
+        from sqlalchemy import cast, String
+
+        query = self.db.query(CompositeTemplate)
+
+        if document_type:
+            query = query.filter(
+                cast(CompositeTemplate.document_types, String).like(
+                    f'%"{document_type}"%'
+                )
+            )
+
+        if search:
+            query = query.filter(CompositeTemplate.name.ilike(f"%{search}%"))
+
+        if sort_by == "match_count":
+            query = query.order_by(CompositeTemplate.match_count.desc())
+        else:
+            query = query.order_by(CompositeTemplate.created_at.desc())
+
+        total = query.count()
+        templates = query.offset(skip).limit(limit).all()
+        return templates, total
+
+    def update_composite_template(
+        self,
+        template_id: str,
+        update_data: CompositeTemplateUpdate,
+    ) -> Optional[CompositeTemplate]:
+        composite = self.get_composite_template(template_id)
+        if not composite:
+            return None
+
+        if update_data.name is not None:
+            composite.name = update_data.name
+        if update_data.document_types is not None:
+            composite.document_types = update_data.document_types
+        if update_data.description is not None:
+            composite.description = update_data.description
+
+        if update_data.rules is not None:
+            self.db.query(CompositeTemplateRule).filter(
+                CompositeTemplateRule.composite_template_id == template_id
+            ).delete()
+
+            for idx, rule_data in enumerate(update_data.rules):
+                rule = CompositeTemplateRule(
+                    id=str(uuid.uuid4()),
+                    composite_template_id=template_id,
+                    base_template_id=rule_data.base_template_id,
+                    start_page=rule_data.start_page,
+                    end_page=rule_data.end_page,
+                    end_page_is_last=rule_data.end_page_is_last,
+                    order_index=idx,
+                )
+                self.db.add(rule)
+
+        composite.updated_at = datetime.now()
+        self.db.commit()
+        self.db.refresh(composite)
+        return composite
+
+    def delete_composite_template(self, template_id: str) -> bool:
+        composite = self.get_composite_template(template_id)
+        if not composite:
+            return False
+
+        self.db.delete(composite)
+        self.db.commit()
+        return True
+
+    def match_composite_template_to_task(
+        self,
+        task: Task,
+        composite_template: CompositeTemplate,
+    ) -> Dict[str, Any]:
+        sorted_rules = sorted(
+            composite_template.rules,
+            key=lambda r: r.order_index
+        )
+
+        total_pages = task.total_pages or len(task.pages)
+        results = []
+        avg_similarity = 0.0
+        match_count = 0
+        total_scores = None
+        original_snapshot = self._snapshot_task_elements(task)
+
+        for rule in sorted_rules:
+            base_template = self.get_template(rule.base_template_id)
+            if not base_template:
+                continue
+
+            end_page = rule.end_page if not rule.end_page_is_last else total_pages
+            if end_page is None:
+                end_page = total_pages
+
+            for page in task.pages:
+                if page.page_number < rule.start_page:
+                    continue
+                if end_page and page.page_number > end_page:
+                    continue
+
+                match_result = self._match_specific_template_to_page(
+                    page, base_template
+                )
+                if match_result and match_result.get("template"):
+                    template_page = next(
+                        (p for p in base_template.pages if p.id == match_result["page_info"]["template_page_id"]),
+                        None
+                    )
+                    scores = None
+                    if template_page:
+                        _, scores = self._compute_page_similarity_with_scores(template_page, page)
+
+                    if scores:
+                        if total_scores is None:
+                            total_scores = {
+                                "count_similarity": 0,
+                                "type_similarity": 0,
+                                "layout_similarity": 0,
+                                "overall": 0,
+                            }
+                        total_scores["count_similarity"] += scores.count_similarity
+                        total_scores["type_similarity"] += scores.type_similarity
+                        total_scores["layout_similarity"] += scores.layout_similarity
+                        total_scores["overall"] += scores.overall
+
+                    avg_similarity += match_result["similarity"]
+                    match_count += 1
+
+                    self.apply_template_to_page_with_marker(
+                        base_template,
+                        match_result["page_info"]["template_page_id"],
+                        page,
+                        base_template.name,
+                    )
+
+                    results.append({
+                        "page_id": page.id,
+                        "page_number": page.page_number,
+                        "template_page_id": match_result["page_info"]["template_page_id"],
+                        "base_template_id": base_template.id,
+                        "base_template_name": base_template.name,
+                        "similarity": match_result["similarity"],
+                        "scores": scores.model_dump() if scores else None,
+                    })
+
+        if match_count > 0:
+            avg_similarity /= match_count
+            if total_scores:
+                total_scores = {
+                    k: v / match_count for k, v in total_scores.items()
+                }
+
+        return {
+            "matched_template_id": composite_template.id,
+            "matched_template_name": composite_template.name,
+            "is_composite": True,
+            "avg_similarity": avg_similarity,
+            "scores": total_scores,
+            "page_matches": results,
+            "original_elements_snapshot": original_snapshot,
+        }
+
+    def _match_specific_template_to_page(
+        self,
+        target_page: Page,
+        template: LayoutTemplate,
+    ) -> Optional[Dict[str, Any]]:
+        template_pages = sorted(template.pages, key=lambda p: p.page_number)
+        if not template_pages:
+            return None
+
+        is_first = (target_page.page_number == 1)
+
+        candidate_pages = []
+        if is_first:
+            first_pages = [p for p in template_pages if p.is_first_page]
+            candidate_pages = first_pages or [template_pages[0]]
+        else:
+            candidate_pages = [p for p in template_pages if not p.is_first_page] or template_pages
+
+        best_similarity = 0.0
+        best_page_info = None
+
+        for template_page in candidate_pages:
+            sim = self._compute_page_similarity(template_page, target_page)
+            if sim > best_similarity:
+                best_similarity = sim
+                best_page_info = {
+                    "template_page_id": template_page.id,
+                    "template_page_number": template_page.page_number,
+                    "page_similarity": sim,
+                }
+
+        if best_similarity >= 0.7:
+            return {
+                "template": template,
+                "similarity": best_similarity,
+                "page_info": best_page_info,
+            }
+
+        return None
+
+    def match_and_apply_to_task_composite_support(
+        self,
+        task: Task,
+        document_types: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        base_result = self.match_and_apply_to_task_with_scores(task, document_types)
+
+        from sqlalchemy import cast, String, or_
+        query = self.db.query(CompositeTemplate)
+        if document_types:
+            type_filters = [
+                CompositeTemplate.document_types.contains([dt])
+                for dt in document_types
+            ]
+            query = query.filter(or_(*type_filters))
+
+        composite_templates = query.all()
+
+        best_composite_result = None
+        best_composite_sim = base_result.get("avg_similarity", 0)
+
+        for composite in composite_templates:
+            result = self.match_composite_template_to_task(task, composite)
+            if result["avg_similarity"] > best_composite_sim:
+                best_composite_sim = result["avg_similarity"]
+                best_composite_result = result
+
+        if best_composite_result:
+            composite_template = self.get_composite_template(
+                best_composite_result["matched_template_id"]
+            )
+            if composite_template:
+                composite_template.match_count += 1
+                self.db.commit()
+            return best_composite_result
+
+        if base_result.get("matched_template_id"):
+            base_template = self.get_template(base_result["matched_template_id"])
+            if base_template:
+                base_template.match_count += 1
+                self.db.commit()
+
+        return base_result
+
+    def increment_composite_match_count(self, template_id: str) -> None:
+        template = self.get_composite_template(template_id)
+        if template:
+            template.match_count += 1
+            self.db.commit()

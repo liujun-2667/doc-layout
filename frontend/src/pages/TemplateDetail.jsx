@@ -32,6 +32,8 @@ import {
   DeleteOutlined,
   CloseOutlined,
   CalendarOutlined,
+  ExperimentOutlined,
+  SwapOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { templateApi } from '../services/api';
@@ -136,11 +138,21 @@ function TemplateDetail() {
   const [form] = Form.useForm();
   const [versions, setVersions] = useState([]);
   const [showVersions, setShowVersions] = useState(false);
+  const [correctionHistory, setCorrectionHistory] = useState([]);
+  const [showCorrections, setShowCorrections] = useState(false);
+  const [isComposite, setIsComposite] = useState(false);
 
   const fetchTemplate = async () => {
     setLoading(true);
     try {
-      const data = await templateApi.get(templateId);
+      let data = null;
+      try {
+        data = await templateApi.get(templateId);
+        setIsComposite(false);
+      } catch (e) {
+        data = await templateApi.getComposite(templateId);
+        setIsComposite(true);
+      }
       setTemplate(data);
       form.setFieldsValue({
         name: data.name,
@@ -156,10 +168,23 @@ function TemplateDetail() {
 
   const fetchVersions = async () => {
     try {
-      const data = await templateApi.listVersions(templateId);
-      setVersions(data || []);
+      if (!isComposite) {
+        const data = await templateApi.listVersions(templateId);
+        setVersions(data || []);
+      }
     } catch (error) {
       message.error('加载版本历史失败');
+    }
+  };
+
+  const fetchCorrectionHistory = async () => {
+    try {
+      if (!isComposite) {
+        const data = await templateApi.getCorrectionHistory(templateId);
+        setCorrectionHistory(data || []);
+      }
+    } catch (error) {
+      message.error('加载修正历史失败');
     }
   };
 
@@ -170,7 +195,12 @@ function TemplateDetail() {
 
   const handleSave = async (values) => {
     try {
-      const updated = await templateApi.update(templateId, values);
+      let updated;
+      if (isComposite) {
+        updated = await templateApi.updateComposite(templateId, values);
+      } else {
+        updated = await templateApi.update(templateId, values);
+      }
       setTemplate(updated);
       setEditing(false);
       message.success('保存成功');
@@ -202,13 +232,22 @@ function TemplateDetail() {
   };
 
   const handleDelete = async () => {
-    try {
-      await templateApi.delete(templateId);
-      message.success('模板已删除');
-      navigate('/templates');
-    } catch (error) {
-      message.error('删除失败');
-    }
+    Modal.confirm({
+      title: '确定删除此模板吗?',
+      onOk: async () => {
+        try {
+          if (isComposite) {
+            await templateApi.deleteComposite(templateId);
+          } else {
+            await templateApi.delete(templateId);
+          }
+          message.success('模板已删除');
+          navigate('/templates');
+        } catch (error) {
+          message.error('删除失败');
+        }
+      },
+    });
   };
 
   const sortedPages = [...(template?.pages || [])].sort(
@@ -237,20 +276,40 @@ function TemplateDetail() {
           >
             返回列表
           </Button>
-          <Title level={3} style={{ margin: 0 }}>
-            模板详情
-          </Title>
+          <Space>
+            <Title level={3} style={{ margin: 0 }}>
+              模板详情
+            </Title>
+            {isComposite && (
+              <Tag color="purple" icon={<SwapOutlined />}>
+                组合模板
+              </Tag>
+            )}
+          </Space>
         </Space>
         <Space>
-          <Button
-            icon={<HistoryOutlined />}
-            onClick={() => {
-              setShowVersions(true);
-              fetchVersions();
-            }}
-          >
-            版本历史
-          </Button>
+          {!isComposite && (
+            <Button
+              icon={<ExperimentOutlined />}
+              onClick={() => {
+                setShowCorrections(true);
+                fetchCorrectionHistory();
+              }}
+            >
+              修正历史
+            </Button>
+          )}
+          {!isComposite && (
+            <Button
+              icon={<HistoryOutlined />}
+              onClick={() => {
+                setShowVersions(true);
+                fetchVersions();
+              }}
+            >
+              版本历史
+            </Button>
+          )}
           <Popconfirm
             title="确定删除此模板吗?"
             onConfirm={handleDelete}
@@ -385,19 +444,79 @@ function TemplateDetail() {
         </Col>
 
         <Col xs={24} md={16}>
-          <Card
-            title={
-              <Space>
-                <span>版面结构预览</span>
-                <Tag color="blue">{totalElements} 个元素</Tag>
-              </Space>
-            }
-            loading={loading}
-          >
-            {sortedPages.length === 0 ? (
-              <Empty description="此模板暂无版面数据" />
-            ) : (
-              <Row gutter={[16, 16]}>
+          {isComposite ? (
+            <Card
+              title={
+                <Space>
+                  <SwapOutlined />
+                  <span>组合规则</span>
+                  <Tag color="purple">{template?.rules?.length || 0} 条规则</Tag>
+                </Space>
+              }
+              loading={loading}
+            >
+              {!template?.rules || template.rules.length === 0 ? (
+                <Empty description="此组合模板暂无规则" />
+              ) : (
+                <List
+                  itemLayout="horizontal"
+                  dataSource={[...template.rules].sort((a, b) => a.order_index - b.order_index)}
+                  renderItem={(rule, idx) => (
+                    <List.Item>
+                      <List.Item.Meta
+                        avatar={
+                          <div
+                            style={{
+                              width: 32,
+                              height: 32,
+                              borderRadius: '50%',
+                              background: '#722ed1',
+                              color: '#fff',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              fontWeight: 'bold',
+                            }}
+                          >
+                            {idx + 1}
+                          </div>
+                        }
+                        title={
+                          <Space>
+                            <span style={{ fontWeight: 500 }}>
+                              {rule.base_template_name || '未知模板'}
+                            </span>
+                            <Tag color="blue">ID: {rule.base_template_id?.slice(0, 8)}...</Tag>
+                          </Space>
+                        }
+                        description={
+                          <Space>
+                            <span style={{ color: '#666' }}>
+                              适用页码: 第 {rule.start_page} 页 -{' '}
+                              {rule.end_page_is_last ? '末页' : `第 ${rule.end_page} 页`}
+                            </span>
+                          </Space>
+                        }
+                      />
+                    </List.Item>
+                  )}
+                />
+              )}
+            </Card>
+          ) : (
+            <Card
+              title={
+                <Space>
+                  <span>版面结构预览</span>
+                  <Tag color="blue">{totalElements} 个元素</Tag>
+                </Space>
+              }
+              loading={loading}
+            >
+              {sortedPages.length === 0 ? (
+                <Empty description="此模板暂无版面数据" />
+              ) : (
+                <Row gutter={[16, 16]}>
                 {sortedPages.map((page, idx) => (
                   <Col xs={24} sm={12} lg={8} key={page.id}>
                     <Card
@@ -430,8 +549,88 @@ function TemplateDetail() {
               </Row>
             )}
           </Card>
+          )}
         </Col>
       </Row>
+
+      <Modal
+        title={
+          <Space>
+            <ExperimentOutlined />
+            修正历史
+          </Space>
+        }
+        open={showCorrections}
+        onCancel={() => setShowCorrections(false)}
+        width={720}
+        footer={[
+          <Button key="close" onClick={() => setShowCorrections(false)}>
+            关闭
+          </Button>,
+        ]}
+      >
+        {correctionHistory.length === 0 ? (
+          <Empty description="暂无修正记录" />
+        ) : (
+          <List
+            itemLayout="horizontal"
+            dataSource={correctionHistory}
+            renderItem={(item) => (
+              <List.Item>
+                <List.Item.Meta
+                  avatar={
+                    <div
+                      style={{
+                        width: 32,
+                        height: 32,
+                        borderRadius: '50%',
+                        background: '#faad14',
+                        color: '#fff',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: 12,
+                      }}
+                    >
+                      {item.element_position + 1}
+                    </div>
+                  }
+                  title={
+                    <Space>
+                      <span style={{ fontWeight: 500 }}>
+                        第 {item.page_number} 页
+                      </span>
+                      <Tag color="default">
+                        位置 #{item.element_position + 1}
+                      </Tag>
+                    </Space>
+                  }
+                  description={
+                    <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                      <Space>
+                        <Tag color="red">{item.original_type}</Tag>
+                        <span style={{ color: '#999' }}>→</span>
+                        <Tag color="green">{item.corrected_type}</Tag>
+                      </Space>
+                      {item.original_reading_order !== item.corrected_reading_order && (
+                        <Space>
+                          <Text type="secondary" style={{ fontSize: 12 }}>
+                            顺序: #{item.original_reading_order} → #{item.corrected_reading_order}
+                          </Text>
+                        </Space>
+                      )}
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        <CalendarOutlined style={{ marginRight: 4 }} />
+                        {dayjs(item.created_at).format('YYYY-MM-DD HH:mm:ss')}
+                      </Text>
+                    </Space>
+                  }
+                />
+              </List.Item>
+            )}
+          />
+        )}
+      </Modal>
 
       <Modal
         title={

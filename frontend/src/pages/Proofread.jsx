@@ -18,6 +18,7 @@ import {
   Empty,
   Slider,
   Checkbox,
+  Divider,
 } from 'antd';
 import {
   ArrowLeftOutlined,
@@ -38,6 +39,9 @@ import {
   ColumnWidthOutlined,
   HolderOutlined,
   CloseOutlined,
+  FileTextOutlined,
+  InfoCircleOutlined,
+  SwapOutlined,
 } from '@ant-design/icons';
 import { taskApi, pageApi, analysisApi, templateApi } from '../services/api';
 import { ELEMENT_COLORS, ELEMENT_TYPES, getElementColor } from '../constants/elements';
@@ -140,9 +144,27 @@ function Proofread() {
   const handleAcceptMatch = async () => {
     if (!templateMatchInfo?.matched_template_id) return;
     try {
-      await templateApi.accept(taskId, templateMatchInfo.matched_template_id);
+      await templateApi.acceptWithComposite(
+        taskId,
+        templateMatchInfo.matched_template_id,
+        templateMatchInfo.is_composite || false
+      );
       setMatchInfoAccepted(true);
       message.success('已接受模板匹配结果');
+
+      if (!templateMatchInfo.is_composite) {
+        setTimeout(async () => {
+          try {
+            await templateApi.recordCorrections(
+              templateMatchInfo.matched_template_id,
+              taskId,
+              [templateMatchInfo]
+            );
+          } catch (err) {
+            console.warn('记录修正历史失败:', err);
+          }
+        }, 100);
+      }
     } catch (error) {
       message.error('操作失败');
     }
@@ -714,6 +736,8 @@ function Proofread() {
     const color = getElementColor(elem.element_type);
     const isSelected = elem.id === selectedElementId;
     const isMultiSelected = selectedElementIds.includes(elem.id);
+    const isFromTemplate = elem.metadata?.from_template;
+    const templateName = elem.metadata?.template_name;
 
     return (
       <div
@@ -735,6 +759,30 @@ function Proofread() {
           {color.label}
         </span>
         <span className="order-badge">{elem.reading_order}</span>
+        {isFromTemplate && (
+          <Tooltip title={`来自模板: ${templateName || '未知'}`}>
+            <div
+              style={{
+                position: 'absolute',
+                top: -8,
+                right: -8,
+                width: 20,
+                height: 20,
+                background: '#1890ff',
+                borderRadius: '50%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: '#fff',
+                fontSize: 10,
+                boxShadow: '0 2px 4px rgba(0,0,0,0.2)',
+                zIndex: 10,
+              }}
+            >
+              <FileTextOutlined style={{ fontSize: 10 }} />
+            </div>
+          </Tooltip>
+        )}
         {isSelected && (
           <>
             <div
@@ -818,10 +866,63 @@ function Proofread() {
 
   const sortedByOrder = [...elements].sort((a, b) => a.reading_order - b.reading_order);
 
+  const renderScoreBar = (label, score, isLow) => (
+    <div style={{ marginBottom: 8 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+        <span style={{ fontSize: 12, color: isLow ? '#ff4d4f' : '#666', fontWeight: isLow ? 500 : 'normal' }}>
+          {label}
+        </span>
+        <span style={{ fontSize: 12, color: isLow ? '#ff4d4f' : '#666', fontWeight: isLow ? 600 : 'normal' }}>
+          {Math.round(score * 100)}%
+        </span>
+      </div>
+      <div
+        style={{
+          width: '100%',
+          height: 6,
+          background: '#f0f0f0',
+          borderRadius: 3,
+          overflow: 'hidden',
+        }}
+      >
+        <div
+          style={{
+            width: `${score * 100}%`,
+            height: '100%',
+            background: isLow ? '#ff4d4f' : '#52c41a',
+            borderRadius: 3,
+            transition: 'width 0.3s',
+          }}
+        />
+      </div>
+    </div>
+  );
+
   const renderMatchBanner = () => {
     if (!templateMatchInfo?.matched_template_name) return null;
 
     const similarityPct = Math.round((templateMatchInfo.avg_similarity || 0) * 100);
+    const scores = templateMatchInfo.scores;
+    const isComposite = templateMatchInfo.is_composite;
+
+    const scoreContent = scores ? (
+      <div style={{ width: 220, padding: 4 }}>
+        <div style={{ fontWeight: 600, marginBottom: 10, color: '#333', fontSize: 13 }}>
+          <InfoCircleOutlined style={{ marginRight: 4, color: '#1890ff' }} />
+          匹配维度详情
+        </div>
+        {renderScoreBar('元素数量匹配度', scores.count_similarity, scores.count_similarity < 0.5)}
+        {renderScoreBar('类型分布匹配度', scores.type_similarity, scores.type_similarity < 0.5)}
+        {renderScoreBar('空间布局匹配度', scores.layout_similarity, scores.layout_similarity < 0.5)}
+        <Divider style={{ margin: '8px 0' }} />
+        {renderScoreBar('综合相似度', scores.overall, scores.overall < 0.5)}
+        {(scores.count_similarity < 0.5 || scores.type_similarity < 0.5 || scores.layout_similarity < 0.5) && (
+          <div style={{ marginTop: 8, padding: 8, background: '#fff2f0', borderRadius: 4, fontSize: 11, color: '#cf1322' }}>
+            ⚠️ 部分维度匹配度较低，建议仔细核对
+          </div>
+        )}
+      </div>
+    ) : null;
 
     return (
       <div
@@ -845,14 +946,40 @@ function Proofread() {
             {matchInfoAccepted ? '确认使用' : '自动匹配'}
             模板:
           </span>
-          <Tag color="blue" style={{ margin: 0 }}>
+          <Tag color={isComposite ? 'purple' : 'blue'} style={{ margin: 0 }}>
+            {isComposite && <SwapOutlined style={{ marginRight: 4 }} />}
             {templateMatchInfo.matched_template_name}
           </Tag>
-          <span style={{ color: '#666' }}>相似度: {similarityPct}%</span>
+          {scores ? (
+            <Tooltip title={scoreContent} placement="bottom" trigger="hover">
+              <span
+                style={{
+                  color: '#666',
+                  cursor: 'help',
+                  textDecoration: 'underline',
+                  textDecorationStyle: 'dotted',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                }}
+              >
+                <InfoCircleOutlined style={{ color: '#1890ff' }} />
+                相似度: {similarityPct}%
+              </span>
+            </Tooltip>
+          ) : (
+            <span style={{ color: '#666' }}>相似度: {similarityPct}%</span>
+          )}
           {templateMatchInfo.page_matches && (
             <span style={{ color: '#999', fontSize: 12 }}>
               ({templateMatchInfo.page_matches.length} 页匹配)
             </span>
+          )}
+          {isComposite && (
+            <Tag color="purple" style={{ margin: 0 }}>
+              <SwapOutlined style={{ marginRight: 4 }} />
+              组合模板
+            </Tag>
           )}
         </Space>
         <Space>

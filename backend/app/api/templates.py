@@ -13,6 +13,11 @@ from app.schemas import (
     MatchResult,
     ApplyTemplateRequest,
     SaveTemplateConflictRequest,
+    TemplateCorrectionHistoryResponse,
+    RecordCorrectionsRequest,
+    CompositeTemplateCreate,
+    CompositeTemplateUpdate,
+    CompositeTemplateResponse,
 )
 from app.services.template_service import TemplateService
 
@@ -36,9 +41,17 @@ async def list_templates(
         search=search,
         sort_by=sort_by,
     )
+    composite_templates, _ = service.list_composite_templates(
+        skip=skip,
+        limit=limit,
+        document_type=document_type,
+        search=search,
+        sort_by=sort_by,
+    )
     return {
         "templates": templates,
-        "total": total,
+        "composite_templates": composite_templates,
+        "total": total + len(composite_templates),
     }
 
 
@@ -233,7 +246,9 @@ async def match_template_to_task(
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
 
-    result = service.match_and_apply_to_task(task, document_types)
+    result = service.match_and_apply_to_task_composite_support(task, document_types)
+    task.template_match_info = result
+    db.commit()
     return result
 
 
@@ -258,11 +273,151 @@ async def apply_template_to_task(
 async def accept_template_match(
     task_id: str,
     template_id: str,
+    is_composite: bool = Query(False),
     db: Session = Depends(get_db),
 ):
     service = TemplateService(db)
-    service.increment_match_count(template_id)
+    if is_composite:
+        service.increment_composite_match_count(template_id)
+    else:
+        service.increment_match_count(template_id)
     return {"message": "已接受模板匹配,匹配次数已更新"}
+
+
+@router.post("/{template_id}/record-corrections")
+async def record_corrections(
+    template_id: str,
+    request: RecordCorrectionsRequest,
+    db: Session = Depends(get_db),
+):
+    service = TemplateService(db)
+    template = service.get_template(template_id)
+    if not template:
+        composite = service.get_composite_template(template_id)
+        if not composite:
+            raise HTTPException(status_code=404, detail="模板不存在")
+
+    template_snapshot = request.page_corrections[0] if request.page_corrections else {}
+
+    corrections = service.record_corrections_and_learn(
+        template_id=template_id,
+        task_id=request.task_id,
+        template_snapshot=template_snapshot,
+    )
+    return {
+        "corrections_count": len(corrections),
+        "corrections": corrections,
+    }
+
+
+@router.get("/{template_id}/correction-history", response_model=List[TemplateCorrectionHistoryResponse])
+async def get_correction_history(
+    template_id: str,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(get_db),
+):
+    service = TemplateService(db)
+    histories, total = service.list_correction_histories(
+        template_id=template_id,
+        skip=skip,
+        limit=limit,
+    )
+    return histories
+
+
+@router.post("/composite", response_model=CompositeTemplateResponse)
+async def create_composite_template(
+    template_data: CompositeTemplateCreate,
+    db: Session = Depends(get_db),
+):
+    service = TemplateService(db)
+
+    if service.check_name_exists(template_data.name):
+        raise HTTPException(
+            status_code=409,
+            detail="已存在同名模板",
+        )
+
+    template = service.create_composite_template(template_data)
+    return template
+
+
+@router.get("/composite/{template_id}", response_model=CompositeTemplateResponse)
+async def get_composite_template(
+    template_id: str,
+    db: Session = Depends(get_db),
+):
+    service = TemplateService(db)
+    template = service.get_composite_template(template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="组合模板不存在")
+
+    for rule in template.rules:
+        base_template = service.get_template(rule.base_template_id)
+        if base_template:
+            rule.base_template_name = base_template.name
+
+    return template
+
+
+@router.put("/composite/{template_id}", response_model=CompositeTemplateResponse)
+async def update_composite_template(
+    template_id: str,
+    update_data: CompositeTemplateUpdate,
+    db: Session = Depends(get_db),
+):
+    service = TemplateService(db)
+
+    if update_data.name and service.check_name_exists(update_data.name, exclude_id=template_id):
+        raise HTTPException(
+            status_code=409,
+            detail="已存在同名模板",
+        )
+
+    template = service.update_composite_template(template_id, update_data)
+    if not template:
+        raise HTTPException(status_code=404, detail="组合模板不存在")
+
+    for rule in template.rules:
+        base_template = service.get_template(rule.base_template_id)
+        if base_template:
+            rule.base_template_name = base_template.name
+
+    return template
+
+
+@router.delete("/composite/{template_id}")
+async def delete_composite_template(
+    template_id: str,
+    db: Session = Depends(get_db),
+):
+    service = TemplateService(db)
+    success = service.delete_composite_template(template_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="组合模板不存在")
+    return {"message": "组合模板已删除"}
+
+
+@router.post("/composite/match/{task_id}")
+async def match_composite_template(
+    task_id: str,
+    template_id: str,
+    db: Session = Depends(get_db),
+):
+    service = TemplateService(db)
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    composite_template = service.get_composite_template(template_id)
+    if not composite_template:
+        raise HTTPException(status_code=404, detail="组合模板不存在")
+
+    result = service.match_composite_template_to_task(task, composite_template)
+    task.template_match_info = result
+    db.commit()
+    return result
 
 
 @router.post("/restore/{task_id}")

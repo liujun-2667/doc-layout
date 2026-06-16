@@ -187,17 +187,6 @@ class LayoutTemplateUpdate(BaseModel):
     description: Optional[str] = None
 
 
-class LayoutTemplateResponse(LayoutTemplateBase):
-    id: str
-    match_count: int = 0
-    created_at: datetime
-    updated_at: Optional[datetime]
-    pages: List[TemplatePageResponse] = []
-
-    class Config:
-        from_attributes = True
-
-
 class TemplateVersionBase(BaseModel):
     version_number: int
     snapshot: Dict[str, Any] = {}
@@ -212,15 +201,23 @@ class TemplateVersionResponse(TemplateVersionBase):
         from_attributes = True
 
 
-class TemplateListResponse(BaseModel):
-    templates: List[LayoutTemplateResponse]
-    total: int
-
-
 class MatchResult(BaseModel):
     template: LayoutTemplateResponse
     similarity: float
+    scores: Optional[MatchScores] = None
     page_matches: List[Dict[str, Any]] = []
+
+
+class LayoutTemplateResponse(LayoutTemplateBase):
+    id: str
+    match_count: int = 0
+    created_at: datetime
+    updated_at: Optional[datetime]
+    pages: List[TemplatePageResponse] = []
+    is_composite: bool = False
+
+    class Config:
+        from_attributes = True
 
 
 class ApplyTemplateRequest(BaseModel):
@@ -231,3 +228,95 @@ class ApplyTemplateRequest(BaseModel):
 class SaveTemplateConflictRequest(BaseModel):
     action: str
     new_name: Optional[str] = None
+
+
+class TemplateCorrectionHistoryBase(BaseModel):
+    template_id: str
+    template_page_id: str
+    task_id: str
+    page_number: int
+    element_position: int
+    original_type: str
+    corrected_type: str
+    original_reading_order: int
+    corrected_reading_order: int
+
+
+class TemplateCorrectionHistoryCreate(TemplateCorrectionHistoryBase):
+    pass
+
+
+class TemplateCorrectionHistoryResponse(TemplateCorrectionHistoryBase):
+    id: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class RecordCorrectionsRequest(BaseModel):
+    task_id: str
+    template_id: str
+    page_corrections: List[Dict[str, Any]]
+
+
+class MatchScores(BaseModel):
+    count_similarity: float
+    type_similarity: float
+    layout_similarity: float
+    overall: float
+
+
+class CompositeTemplateRuleBase(BaseModel):
+    base_template_id: str
+    start_page: int
+    end_page: Optional[int] = None
+    end_page_is_last: bool = False
+
+
+class CompositeTemplateRuleCreate(CompositeTemplateRuleBase):
+    pass
+
+
+class CompositeTemplateRuleResponse(CompositeTemplateRuleBase):
+    id: str
+    order_index: int
+    base_template_name: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class CompositeTemplateBase(BaseModel):
+    name: str
+    document_types: List[str] = []
+    description: Optional[str] = None
+
+
+class CompositeTemplateCreate(CompositeTemplateBase):
+    rules: List[CompositeTemplateRuleCreate] = []
+
+
+class CompositeTemplateUpdate(BaseModel):
+    name: Optional[str] = None
+    document_types: Optional[List[str]] = None
+    description: Optional[str] = None
+    rules: Optional[List[CompositeTemplateRuleCreate]] = None
+
+
+class CompositeTemplateResponse(CompositeTemplateBase):
+    id: str
+    match_count: int = 0
+    created_at: datetime
+    updated_at: Optional[datetime]
+    rules: List[CompositeTemplateRuleResponse] = []
+    is_composite: bool = True
+
+    class Config:
+        from_attributes = True
+
+
+class TemplateListResponse(BaseModel):
+    templates: List[LayoutTemplateResponse]
+    composite_templates: List[CompositeTemplateResponse] = []
+    total: int
