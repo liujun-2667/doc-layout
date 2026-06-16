@@ -310,6 +310,11 @@ class TemplateService:
         self.db.refresh(template)
         return template
 
+    def get_template_by_name(self, name: str) -> Optional[LayoutTemplate]:
+        return self.db.query(LayoutTemplate).filter(
+            LayoutTemplate.name == name
+        ).first()
+
     def list_templates(
         self,
         skip: int = 0,
@@ -318,11 +323,15 @@ class TemplateService:
         search: Optional[str] = None,
         sort_by: str = "created_at",
     ) -> Tuple[List[LayoutTemplate], int]:
+        from sqlalchemy import cast, String
+
         query = self.db.query(LayoutTemplate)
 
         if document_type:
             query = query.filter(
-                LayoutTemplate.document_types.contains([document_type])
+                cast(LayoutTemplate.document_types, String).like(
+                    f'%"{document_type}"%'
+                )
             )
 
         if search:
@@ -688,6 +697,8 @@ class TemplateService:
         avg_similarity = 0.0
         match_count = 0
 
+        original_snapshot = self._snapshot_task_elements(task)
+
         for page in task.pages:
             match_result = self.match_template_to_page(page, document_types)
             if match_result:
@@ -716,7 +727,7 @@ class TemplateService:
             "matched_template_name": matched_template.name if matched_template else None,
             "avg_similarity": avg_similarity,
             "page_matches": results,
-            "original_elements_snapshot": self._snapshot_task_elements(task),
+            "original_elements_snapshot": original_snapshot,
         }
 
     def _snapshot_task_elements(self, task: Task) -> Dict[str, Any]:

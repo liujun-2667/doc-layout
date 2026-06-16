@@ -129,10 +129,10 @@ async def resolve_template_conflict(
     new_name_param = conflict_request.get("new_name")
 
     if action == "overwrite":
-        existing_list, _ = service.list_templates(limit=1, search=name)
-        if not existing_list:
+        existing_template = service.get_template_by_name(name)
+        if not existing_template:
             raise HTTPException(status_code=404, detail="要覆盖的模板不存在")
-        template = service.overwrite_template(existing_list[0].id, task)
+        template = service.overwrite_template(existing_template.id, task)
         return template
 
     elif action == "save_as":
